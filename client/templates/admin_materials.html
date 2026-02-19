@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+    <h2>Material Admin</h2>
+    <form method="post" class="form-grid">
+        <label>Material Name
+            <input type="text" name="material_name" required>
+        </label>
+        <div class="actions full">
+            <button type="submit">Add Material</button>
+        </div>
+    </form>
+</section>
+
+<section class="card">
+    <table>
+        <thead>
+            <tr>
+                <th>Material</th>
+                <th>Status</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for m in materials %}
+            <tr>
+                <td>{{ m.material_name }}</td>
+                <td>{{ "Active" if m.active else "Inactive" }}</td>
+                <td>
+                    <form method="post" action="{{ url_for('toggle_material', material_id=m.id) }}">
+                        <button type="submit">{{ "Disable" if m.active else "Enable" }}</button>
+                    </form>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="3">No materials found.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endblock %}
