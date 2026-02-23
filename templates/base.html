@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Dump Ticket System</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <header class="topbar">
+        <div class="brand-block">
+            <h1>Ticket System</h1>
+            <p class="brand-company">McCracken Materials, LLC</p>
+            <p class="brand-address">13675 McCracken Road, Garfield Heights, Ohio 44125</p>
+            <p class="brand-phone">Phone: (216) 206-2600</p>
+        </div>
+        <nav>
+            <a href="{{ url_for('new_ticket') }}">New Ticket</a>
+            <a href="{{ url_for('search_tickets') }}">Search/Reprint</a>
+            <a href="{{ url_for('reports') }}">Reports</a>
+            <a href="{{ url_for('admin_trucks') }}">Trucks</a>
+            <a href="{{ url_for('admin_materials') }}">Materials</a>
+        </nav>
+    </header>
+    <main class="container">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <section>
+                    {% for category, message in messages %}
+                        <div class="flash {{ category }}">{{ message }}</div>
+                    {% endfor %}
+                </section>
+            {% endif %}
+        {% endwith %}
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>

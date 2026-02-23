@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+    <h2>Ticket Reports</h2>
+    <form method="get" class="form-grid">
+        <label>Date From
+            <input type="date" name="date_from" value="{{ filters.date_from }}">
+        </label>
+
+        <label>Date To
+            <input type="date" name="date_to" value="{{ filters.date_to }}">
+        </label>
+
+        <label>Direction
+            <select name="direction">
+                <option value="">All</option>
+                <option value="IN" {% if filters.direction == "IN" %}selected{% endif %}>IN</option>
+                <option value="OUT" {% if filters.direction == "OUT" %}selected{% endif %}>OUT</option>
+            </select>
+        </label>
+
+        <label>Job
+            <select name="job_id">
+                <option value="">All jobs</option>
+                {% for job in jobs %}
+                    <option value="{{ job.id }}" {% if filters.job_id == (job.id|string) %}selected{% endif %}>
+                        {{ job.job_code }} - {{ job.job_name }}
+                    </option>
+                {% endfor %}
+            </select>
+        </label>
+
+        <label>Material
+            <select name="material_id">
+                <option value="">All materials</option>
+                {% for material in materials %}
+                    <option value="{{ material.id }}" {% if filters.material_id == (material.id|string) %}selected{% endif %}>
+                        {{ material.material_name }}
+                    </option>
+                {% endfor %}
+            </select>
+        </label>
+
+        <div class="actions full">
+            <button type="submit">Run Report</button>
+                <a href="{{ url_for('print_reports',
+                    date_from=filters.date_from,
+                    date_to=filters.date_to,
+                    direction=filters.direction,
+                    job_id=filters.job_id,
+                    material_id=filters.material_id) }}">
+                    Print Report
+                </a>
+
+            <a href="{{ url_for('export_reports_csv', date_from=filters.date_from, date_to=filters.date_to, direction=filters.direction, job_id=filters.job_id, material_id=filters.material_id) }}">Export CSV</a>
+            <a href="{{ url_for('reports') }}">Clear</a>
+        </div>
+    </form>
+</section>
+
+<section class="card">
+    <h3>Total Quantity by Unit</h3>
+    {% if totals_by_unit %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Unit</th>
+                    <th>Total Quantity</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for total in totals_by_unit %}
+                    <tr>
+                        <td>{{ total.unit }}</td>
+                        <td>{{ "%.2f"|format(total.total_quantity) }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p>No matching tickets.</p>
+    {% endif %}
+</section>
+
+<section class="card">
+    <h3>Total Quantity by Material</h3>
+    {% if totals_by_material %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Material</th>
+                    <th>Unit</th>
+                    <th>Total Quantity</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for total in totals_by_material %}
+                    <tr>
+                        <td>{{ total.material_name_snapshot }}</td>
+                        <td>{{ total.unit }}</td>
+                        <td>{{ "%.2f"|format(total.total_quantity) }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p>No matching tickets.</p>
+    {% endif %}
+</section>
+
+<section class="card">
+    <h3>Matching Tickets</h3>
+    {% if tickets %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Ticket #</th>
+                    <th>Date/Time</th>
+                    <th>Direction</th>
+                    <th>Job</th>
+                    <th>Customer</th>
+                    <th>Truck</th>
+                    <th>Material</th>
+                    <th>Quantity</th>
+                    <th>Unit</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for t in tickets %}
+                    <tr>
+                        <td>{{ t.ticket_number }}</td>
+                        <td>{{ t.created_at|ticket_datetime }}</td>
+                        <td>{{ t.direction }}</td>
+                        <td>{{ t.job_code_snapshot }} - {{ t.job_name_snapshot }}</td>
+                        <td>{{ t.customer_snapshot }}</td>
+                        <td>{{ t.truck_number_snapshot }}</td>
+                        <td>{{ t.material_name_snapshot }}</td>
+                        <td>{{ "%.2f"|format(t.quantity) }}</td>
+                        <td>{{ t.unit }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        <!-- ✅ SHOW MORE BUTTON -->
+        {% if tickets|length == 20 %}
+        <div style="margin-top: 10px;">
+            <a href="{{ url_for('reports',
+                date_from=filters.date_from,
+                date_to=filters.date_to,
+                direction=filters.direction,
+                job_id=filters.job_id,
+                material_id=filters.material_id,
+                offset=offset+20) }}">
+                Show More
+            </a>
+        </div>
+    {% endif %}
+    {% else %}
+        <p>No matching tickets.</p>
+    {% endif %}
+</section>
+{% endblock %}

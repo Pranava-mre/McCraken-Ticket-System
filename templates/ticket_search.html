@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+    <h2>Ticket Search / Reprint</h2>
+    <form method="get" class="form-grid">
+        <label>Ticket #
+            <input type="text" name="ticket_number" value="{{ request.args.get('ticket_number', '') }}">
+        </label>
+        <label>Truck
+            <input type="text" name="truck" value="{{ request.args.get('truck', '') }}">
+        </label>
+        <label>Job Code
+            <input type="text" name="job" value="{{ request.args.get('job', '') }}">
+        </label>
+        <label>Date From
+            <input type="date" name="date_from" value="{{ request.args.get('date_from', '') }}">
+        </label>
+        <label>Date To
+            <input type="date" name="date_to" value="{{ request.args.get('date_to', '') }}">
+        </label>
+        <div class="actions full">
+            <button type="submit">Search</button>
+        </div>
+    </form>
+</section>
+
+<section class="card">
+    <table>
+        <thead>
+            <tr>
+                <th>Ticket #</th>
+                <th>Date</th>
+                <th>Dir</th>
+                <th>Job</th>
+                <th>Customer</th>
+                <th>Truck</th>
+                <th>Material</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for t in tickets %}
+            <tr>
+                <td>{{ t.ticket_number }}</td>
+                <td>{{ t.created_at|ticket_datetime }}</td>
+                <td>{{ t.direction }}</td>
+                <td>{{ t.job_code_snapshot }}</td>
+                <td>{{ t.customer_snapshot }}</td>
+                <td>{{ t.truck_number_snapshot }}</td>
+                <td>{{ t.material_name_snapshot }}</td>
+                <td class="actions">
+                    <a href="{{ url_for('ticket_pdf', ticket_id=t.id) }}">PDF</a>
+                    <form method="post" action="{{ url_for('print_ticket', ticket_id=t.id) }}" class="inline-form">
+                        <button type="submit">Reprint</button>
+                    </form>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="8">No tickets found.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endblock %}

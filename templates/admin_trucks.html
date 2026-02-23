@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+    <h2>Truck Admin</h2>
+    <form method="post" class="form-grid">
+        <label>Truck Number
+            <input type="text" name="truck_number" required>
+        </label>
+        <label>Description
+            <input type="text" name="description">
+        </label>
+        <label>Truck Size
+            <input type="text" name="truck_size" placeholder="e.g. Tri-axle, 20 yd">
+        </label>
+        <label>Hauled By
+            <input type="text" name="hauled_by" placeholder="e.g. Carrier name">
+        </label>
+        <div class="actions full">
+            <button type="submit">Add Truck</button>
+        </div>
+    </form>
+</section>
+
+<section class="card">
+    <table>
+        <thead>
+            <tr>
+                <th>Truck Number</th>
+                <th>Description</th>
+                <th>Truck Size</th>
+                <th>Hauled By</th>
+                <th>Status</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for t in trucks %}
+            <tr>
+                <td>{{ t.truck_number }}</td>
+                <td>{{ t.description }}</td>
+                <td>{{ t.truck_size }}</td>
+                <td>{{ t.hauled_by }}</td>
+                <td>{{ "Active" if t.active else "Inactive" }}</td>
+                <td>
+                    <form method="post" action="{{ url_for('toggle_truck', truck_id=t.id) }}">
+                        <button type="submit">{{ "Disable" if t.active else "Enable" }}</button>
+                    </form>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6">No trucks found.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endblock %}

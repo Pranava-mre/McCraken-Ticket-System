@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+    <h2>Create Ticket</h2>
+    <form method="post" class="form-grid">
+        <label>Direction
+            <select name="direction" required>
+                <option value="IN">IN</option>
+                <option value="OUT">OUT</option>
+            </select>
+        </label>
+
+        <label>Job
+            <input type="text" id="job_search" name="job_entry" list="jobs_list" placeholder="Type or enter new job" autocomplete="off" required>
+            <input type="hidden" name="job_id" id="job_id">
+            <datalist id="jobs_list">
+                {% for job in jobs %}
+                    <option value="{{ job.job_code }} - {{ job.job_name }}" data-id="{{ job.id }}" data-customer="{{ job.customer or '' }}"></option>
+                {% endfor %}
+            </datalist>
+        </label>
+
+        <label>Customer
+            <input type="text" name="customer" id="customer" placeholder="Customer name">
+        </label>
+
+        <label>Truck
+            <input type="text" id="truck_search" name="truck_entry" list="trucks_list" placeholder="Type or enter new truck" autocomplete="off" required>
+            <input type="hidden" name="truck_id" id="truck_id">
+            <datalist id="trucks_list">
+                {% for truck in trucks %}
+                    <option value="{{ truck.truck_number }}" data-id="{{ truck.id }}"></option>
+                {% endfor %}
+            </datalist>
+        </label>
+
+        <label>Material
+            <input type="text" id="material_search" name="material_entry" list="materials_list" placeholder="Type or enter new material" autocomplete="off" required>
+            <input type="hidden" name="material_id" id="material_id">
+            <datalist id="materials_list">
+                {% for material in materials %}
+                    <option value="{{ material.material_name }}" data-id="{{ material.id }}"></option>
+                {% endfor %}
+            </datalist>
+        </label>
+
+        <label>Quantity
+            <input type="number" name="quantity" value="1" required>
+        </label>
+
+        <label>Unit
+            <input type="text" name="unit" value="Load" required>
+        </label>
+        <!-- NEW SECTION -->
+        <label class="inline">
+            <input type="checkbox" id="use_now" name="use_now" checked>
+            Use Current Date & Time
+        </label>
+
+        <label id="custom_date_label" style="display:none;">
+            Select Date & Time
+            <input type="datetime-local" name="custom_datetime" id="custom_datetime">
+        </label>
+
+        <label class="full">Notes
+            <textarea name="notes" rows="3"></textarea>
+        </label>
+
+        <label class="inline">
+            <input type="checkbox" name="auto_print" checked>
+            Auto print after save
+        </label>
+
+        <div class="actions full">
+            <button type="submit">Submit Ticket</button>
+        </div>
+    </form>
+</section>
+
+<section class="card">
+    <h3>Refresh Jobs From SQL Server</h3>
+    <form method="post" action="{{ url_for('refresh_jobs') }}">
+        <button type="submit">Refresh Jobs Cache</button>
+    </form>
+</section>
+
+<script>
+    function bindSearchSelect(inputId, hiddenId, datalistId, fieldLabel) {
+        const input = document.getElementById(inputId);
+        const hidden = document.getElementById(hiddenId);
+        const datalist = document.getElementById(datalistId);
+        if (!input || !hidden || !datalist) return;
+
+        const optionMap = new Map();
+        for (const option of datalist.options) {
+            optionMap.set(option.value.trim(), {
+                id: option.dataset.id || "",
+                customer: option.dataset.customer || ""
+            });
+        }
+
+        function syncHidden() {
+            const selected = optionMap.get(input.value.trim()) || null;
+            const selectedId = selected ? selected.id : "";
+            hidden.value = selectedId;
+            input.setCustomValidity("");
+
+            if (inputId === "job_search" && selected) {
+                const customerInput = document.getElementById("customer");
+                if (customerInput && selected.customer) {
+                    customerInput.value = selected.customer;
+                }
+            }
+        }
+
+        input.addEventListener("input", syncHidden);
+        input.addEventListener("change", syncHidden);
+    }
+
+    bindSearchSelect("job_search", "job_id", "jobs_list", "job");
+    bindSearchSelect("truck_search", "truck_id", "trucks_list", "truck");
+    bindSearchSelect("material_search", "material_id", "materials_list", "material");
+
+    const useNowCheckbox = document.getElementById("use_now");
+    const customDateLabel = document.getElementById("custom_date_label");
+    const customDateInput = document.getElementById("custom_datetime");
+
+    function toggleDateInput() {
+        if (useNowCheckbox.checked) {
+            customDateLabel.style.display = "none";
+            customDateInput.required = false;
+        } else {
+            customDateLabel.style.display = "block";
+            customDateInput.required = true;
+        }
+    }
+
+    useNowCheckbox.addEventListener("change", toggleDateInput);
+    toggleDateInput();
+</script>
+{% endblock %}
