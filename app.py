@@ -492,9 +492,14 @@ def list_jobs(db):
     ).fetchall()
 
 
+# def list_trucks(db):
+#     return db.execute(
+#         "SELECT id, truck_number, description, truck_size, hauled_by, active FROM trucks WHERE active = 1 ORDER BY truck_number"
+#     ).fetchall()
+
 def list_trucks(db):
     return db.execute(
-        "SELECT id, truck_number, description, truck_size, hauled_by, active FROM trucks WHERE active = 1 ORDER BY truck_number"
+        "SELECT id, truck_number, notes AS description, truck_size, trucking_company AS hauled_by, active FROM trucks_main WHERE active = 1 ORDER BY truck_number"
     ).fetchall()
 
 

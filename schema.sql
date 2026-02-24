@@ -28,6 +28,43 @@ CREATE TABLE IF NOT EXISTS ticket_sequence (
     last_value INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS material_price (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cat INTEGER NOT NULL,
+    code TEXT NOT NULL,
+    material TEXT NOT NULL,
+    axle1 REAL ,
+    axle2 REAL ,
+    axle3 REAL ,
+    axle4 REAL ,
+    axle5 REAL ,
+    axle6 REAL ,
+    axle7 REAL ,
+    axle8 REAL ,
+    axle9 REAL 
+);
+
+CREATE TABLE IF NOT EXISTS customers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    customer_code TEXT NOT NULL,
+    customer_name TEXT,
+    full_address TEXT,
+    contact_person TEXT,
+    phone_number TEXT,
+    notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS trucks_main(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    truck_number TEXT NOT NULL UNIQUE,
+    trucking_company TEXT NOT NULL DEFAULT '',
+    notes TEXT,
+    truck_size TEXT NOT NULL DEFAULT '',
+    phone TEXT,
+    license_plate TEXT,
+    active INTEGER NOT NULL DEFAULT 1
+);
+
 CREATE TABLE IF NOT EXISTS tickets (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ticket_number TEXT NOT NULL UNIQUE,
