@@ -15,13 +15,20 @@
             <input type="hidden" name="job_id" id="job_id">
             <datalist id="jobs_list">
                 {% for job in jobs %}
-                    <option value="{{ job.job_code }} - {{ job.job_name }}" data-id="{{ job.id }}" data-customer="{{ job.customer or '' }}"></option>
+                    <!-- <option value="{{ job.job_code }} - {{ job.job_name }}" data-id="{{ job.id }}" data-customer="{{ job.customer or '' }}"></option> -->
+                     <option value="{{ job.job_code }} - {{ job.job_name }}" data-id="{{ job.id }}"></option>
                 {% endfor %}
             </datalist>
         </label>
 
         <label>Customer
-            <input type="text" name="customer" id="customer" placeholder="Customer name">
+            <input type="text" id="customer_search" name="customer_entry" list="customers_list" placeholder="Type or enter new customer" autocomplete="off" required>
+            <input type="hidden" name="customer_id" id="customer_id">
+            <datalist id="customers_list">
+                {% for customer in customers %}
+                    <option value="{{ customer.customer_name }}" data-id="{{ customer.id }}"></option>
+                {% endfor %}
+            </datalist>
         </label>
 
         <label>Truck
@@ -105,12 +112,12 @@
             hidden.value = selectedId;
             input.setCustomValidity("");
 
-            if (inputId === "job_search" && selected) {
-                const customerInput = document.getElementById("customer");
-                if (customerInput && selected.customer) {
-                    customerInput.value = selected.customer;
-                }
-            }
+            // if (inputId === "job_search" && selected) {
+            //     const customerInput = document.getElementById("customer");
+            //     if (customerInput && selected.customer) {
+            //         customerInput.value = selected.customer;
+            //     }
+            // }
         }
 
         input.addEventListener("input", syncHidden);
@@ -118,8 +125,10 @@
     }
 
     bindSearchSelect("job_search", "job_id", "jobs_list", "job");
+    bindSearchSelect("customer_search", "customer_id", "customers_list", "customer");
     bindSearchSelect("truck_search", "truck_id", "trucks_list", "truck");
     bindSearchSelect("material_search", "material_id", "materials_list", "material");
+
 
     const useNowCheckbox = document.getElementById("use_now");
     const customDateLabel = document.getElementById("custom_date_label");

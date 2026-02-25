@@ -31,8 +31,8 @@ CREATE TABLE IF NOT EXISTS ticket_sequence (
 CREATE TABLE IF NOT EXISTS material_price (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     cat INTEGER NOT NULL,
-    code TEXT NOT NULL,
-    material TEXT NOT NULL,
+    material TEXT NOT NULL UNIQUE,
+    direction TEXT NOT NULL CHECK(direction IN ('IN', 'OUT')),
     axle1 REAL ,
     axle2 REAL ,
     axle3 REAL ,
@@ -41,12 +41,12 @@ CREATE TABLE IF NOT EXISTS material_price (
     axle6 REAL ,
     axle7 REAL ,
     axle8 REAL ,
-    axle9 REAL 
+    axle9 REAL ,
+    active INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS customers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    customer_code TEXT NOT NULL,
     customer_name TEXT,
     full_address TEXT,
     contact_person TEXT,

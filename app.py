@@ -480,7 +480,6 @@ def refresh_jobs_cache(db):
         )
     return len(rows)
 
-
 def list_jobs(db):
     return db.execute(
         """
@@ -491,23 +490,24 @@ def list_jobs(db):
         """
     ).fetchall()
 
-
 # def list_trucks(db):
 #     return db.execute(
 #         "SELECT id, truck_number, description, truck_size, hauled_by, active FROM trucks WHERE active = 1 ORDER BY truck_number"
 #     ).fetchall()
+def list_customers(db):
+    return db.execute(
+        "SELECT id, customer_name FROM customers ORDER BY customer_name"
+    ).fetchall()
 
 def list_trucks(db):
     return db.execute(
         "SELECT id, truck_number, notes AS description, truck_size, trucking_company AS hauled_by, active FROM trucks_main WHERE active = 1 ORDER BY truck_number"
     ).fetchall()
 
-
-def list_materials(db):
+def list_materials(db,direction):
     return db.execute(
-        "SELECT id, material_name, active FROM materials WHERE active = 1 ORDER BY material_name"
+        "SELECT id, material AS material_name, active, direction FROM material_price WHERE active = 1 AND direction = ? ORDER BY material_name", (direction,)
     ).fetchall()
-
 
 @app.route("/")
 def home():
@@ -526,7 +526,7 @@ def new_ticket():
         truck_entry = request.form.get("truck_entry", "").strip()
         material_id = request.form.get("material_id", "").strip()
         material_entry = request.form.get("material_entry", "").strip()
-        customer = request.form.get("customer", "").strip()
+        customer_id = request.form.get("customer_id", "").strip()
         quantity = (request.form.get("quantity") or "1").strip()
         unit = (request.form.get("unit") or "Load").strip()
         notes = request.form.get("notes", "").strip()
@@ -550,6 +550,8 @@ def new_ticket():
             truck = db.execute("SELECT id, truck_number FROM trucks WHERE id = ?", (truck_id,)).fetchone()
         if material_id:
             material = db.execute("SELECT id, material_name FROM materials WHERE id = ?", (material_id,)).fetchone()
+        if customer_id:
+            customer = db.execute("SELECT id, customer_name FROM customers WHERE id = ?", (customer_id,)).fetchone()
 
         if job:
             job_id_value = job["id"]
@@ -666,8 +668,9 @@ def new_ticket():
     return render_template(
         "ticket_new.html",
         jobs=list_jobs(db),
+        customers =list_customers(db),
         trucks=list_trucks(db),
-        materials=list_materials(db),
+        materials=list_materials(db,direction),
     )
 
 
