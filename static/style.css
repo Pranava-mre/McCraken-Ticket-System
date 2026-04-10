@@ -102,6 +102,14 @@ button {
     border-radius: 4px;
 }
 
+button.danger {
+    background: #dc2626;
+}
+
+button.danger:hover {
+    background: #b91c1c;
+}
+
 .inline {
     display: flex;
     align-items: center;

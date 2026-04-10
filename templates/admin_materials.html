@@ -17,6 +17,15 @@
         <thead>
             <tr>
                 <th>Material</th>
+                <th>Axle 1</th>
+                <th>Axle 2</th>
+                <th>Axle 3</th>
+                <th>Axle 4</th>
+                <th>Axle 5</th>
+                <th>Axle 6</th>
+                <th>Axle 7</th>
+                <th>Axle 8</th>
+                <th>Axle 9</th>
                 <th>Status</th>
                 <th>Action</th>
             </tr>
@@ -25,6 +34,15 @@
             {% for m in materials %}
             <tr>
                 <td>{{ m.material_name }}</td>
+                <td>{{ m.axle1 }}</td>
+                <td>{{ m.axle2 }}</td>
+                <td>{{ m.axle3 }}</td>
+                <td>{{ m.axle4 }}</td>
+                <td>{{ m.axle5 }}</td>
+                <td>{{ m.axle6 }}</td>
+                <td>{{ m.axle7 }}</td>
+                <td>{{ m.axle8 }}</td>
+                <td>{{ m.axle9 }}</td>
                 <td>{{ "Active" if m.active else "Inactive" }}</td>
                 <td>
                     <form method="post" action="{{ url_for('toggle_material', material_id=m.id) }}">
@@ -33,7 +51,7 @@
                 </td>
             </tr>
             {% else %}
-            <tr><td colspan="3">No materials found.</td></tr>
+            <tr><td colspan="12">No materials found.</td></tr>
             {% endfor %}
         </tbody>
     </table>

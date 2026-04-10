@@ -119,6 +119,7 @@
                     <th>Direction</th>
                     <th>Job</th>
                     <th>Customer</th>
+                    <th>Tax Exempt</th>
                     <th>Truck</th>
                     <th>Material</th>
                     <th>Quantity</th>
@@ -133,6 +134,7 @@
                         <td>{{ t.direction }}</td>
                         <td>{{ t.job_code_snapshot }} - {{ t.job_name_snapshot }}</td>
                         <td>{{ t.customer_snapshot }}</td>
+                        <td>{{ t.tax_exempt }}</td>     
                         <td>{{ t.truck_number_snapshot }}</td>
                         <td>{{ t.material_name_snapshot }}</td>
                         <td>{{ "%.2f"|format(t.quantity) }}</td>

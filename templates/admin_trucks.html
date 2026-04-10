@@ -10,10 +10,13 @@
             <input type="text" name="description">
         </label>
         <label>Truck Size
-            <input type="text" name="truck_size" placeholder="e.g. Tri-axle, 20 yd">
+            <input type="text" name="truck_size" placeholder="e.g. axle1.0, axle2.0">
         </label>
         <label>Hauled By
             <input type="text" name="hauled_by" placeholder="e.g. Carrier name">
+        </label>
+        <label>License Plate
+            <input type="text" name="license_plate" placeholder="e.g. ABC1234">
         </label>
         <div class="actions full">
             <button type="submit">Add Truck</button>
@@ -29,6 +32,7 @@
                 <th>Description</th>
                 <th>Truck Size</th>
                 <th>Hauled By</th>
+                <th>License Plate</th>
                 <th>Status</th>
                 <th>Action</th>
             </tr>
@@ -40,6 +44,7 @@
                 <td>{{ t.description }}</td>
                 <td>{{ t.truck_size }}</td>
                 <td>{{ t.hauled_by }}</td>
+                <td>{{ t.license_plate }}</td>
                 <td>{{ "Active" if t.active else "Inactive" }}</td>
                 <td>
                     <form method="post" action="{{ url_for('toggle_truck', truck_id=t.id) }}">
@@ -48,7 +53,7 @@
                 </td>
             </tr>
             {% else %}
-            <tr><td colspan="6">No trucks found.</td></tr>
+            <tr><td colspan="7">No trucks found.</td></tr>
             {% endfor %}
         </tbody>
     </table>

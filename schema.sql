@@ -1,15 +1,27 @@
 CREATE TABLE IF NOT EXISTS jobs_cache (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id BIGSERIAL PRIMARY KEY,
     job_code TEXT NOT NULL UNIQUE,
     job_name TEXT NOT NULL,
     customer TEXT,
+    tax_exempt TEXT NOT NULL DEFAULT '',
     active INTEGER NOT NULL DEFAULT 1,
     source_updated_at TEXT,
-    refreshed_at TEXT
+    refreshed_at TEXT 
+);
+
+CREATE TABLE IF NOT EXISTS manual_jobs (
+    id BIGSERIAL PRIMARY KEY,
+    job_code TEXT NOT NULL,
+    job_name TEXT NOT NULL,
+    customer TEXT NOT NULL DEFAULT '',
+    tax_exempt TEXT NOT NULL DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    UNIQUE(job_code, job_name)
 );
 
 CREATE TABLE IF NOT EXISTS trucks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id BIGSERIAL PRIMARY KEY,
     truck_number TEXT NOT NULL UNIQUE,
     description TEXT,
     truck_size TEXT NOT NULL DEFAULT '',
@@ -18,7 +30,7 @@ CREATE TABLE IF NOT EXISTS trucks (
 );
 
 CREATE TABLE IF NOT EXISTS materials (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id BIGSERIAL PRIMARY KEY,
     material_name TEXT NOT NULL UNIQUE,
     active INTEGER NOT NULL DEFAULT 1
 );
@@ -29,7 +41,7 @@ CREATE TABLE IF NOT EXISTS ticket_sequence (
 );
 
 CREATE TABLE IF NOT EXISTS material_price (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id BIGSERIAL PRIMARY KEY,
     cat INTEGER NOT NULL,
     material TEXT NOT NULL UNIQUE,
     direction TEXT NOT NULL CHECK(direction IN ('IN', 'OUT')),
@@ -46,7 +58,7 @@ CREATE TABLE IF NOT EXISTS material_price (
 );
 
 CREATE TABLE IF NOT EXISTS customers (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id BIGSERIAL PRIMARY KEY,
     customer_name TEXT,
     full_address TEXT,
     contact_person TEXT,
@@ -55,7 +67,7 @@ CREATE TABLE IF NOT EXISTS customers (
 );
 
 CREATE TABLE IF NOT EXISTS trucks_main(
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id BIGSERIAL PRIMARY KEY,
     truck_number TEXT NOT NULL UNIQUE,
     trucking_company TEXT NOT NULL DEFAULT '',
     notes TEXT,
@@ -66,7 +78,7 @@ CREATE TABLE IF NOT EXISTS trucks_main(
 );
 
 CREATE TABLE IF NOT EXISTS tickets (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id BIGSERIAL PRIMARY KEY,
     ticket_number TEXT NOT NULL UNIQUE,
     ticket_year INTEGER NOT NULL,
     ticket_sequence INTEGER NOT NULL,
@@ -75,6 +87,7 @@ CREATE TABLE IF NOT EXISTS tickets (
     job_id INTEGER,
     job_code_snapshot TEXT NOT NULL,
     job_name_snapshot TEXT NOT NULL,
+    tax_exempt TEXT NOT NULL DEFAULT '',
     customer_snapshot TEXT NOT NULL DEFAULT '',
     truck_id INTEGER,
     truck_number_snapshot TEXT NOT NULL,
@@ -84,10 +97,10 @@ CREATE TABLE IF NOT EXISTS tickets (
     unit TEXT NOT NULL,
     notes TEXT,
     pdf_path TEXT NOT NULL,
-    pdf_blob BLOB NOT NULL,
+    pdf_blob BYTEA NOT NULL,
     FOREIGN KEY(job_id) REFERENCES jobs_cache(id),
-    FOREIGN KEY(truck_id) REFERENCES trucks(id),
-    FOREIGN KEY(material_id) REFERENCES materials(id)
+    FOREIGN KEY(truck_id) REFERENCES trucks_main(id),
+    FOREIGN KEY(material_id) REFERENCES material_price(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_tickets_created_at ON tickets(created_at);

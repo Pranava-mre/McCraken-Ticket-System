@@ -12,6 +12,9 @@
         <label>Job Code
             <input type="text" name="job" value="{{ request.args.get('job', '') }}">
         </label>
+        <label>Material
+            <input type="text" name="material" value="{{ request.args.get('material', '') }}">
+        </label>
         <label>Date From
             <input type="date" name="date_from" value="{{ request.args.get('date_from', '') }}">
         </label>
@@ -33,6 +36,7 @@
                 <th>Dir</th>
                 <th>Job</th>
                 <th>Customer</th>
+                <th>Tax Exempt</th>
                 <th>Truck</th>
                 <th>Material</th>
                 <th>Actions</th>
@@ -46,6 +50,7 @@
                 <td>{{ t.direction }}</td>
                 <td>{{ t.job_code_snapshot }}</td>
                 <td>{{ t.customer_snapshot }}</td>
+                <td>{{ t.tax_exempt }}</td>
                 <td>{{ t.truck_number_snapshot }}</td>
                 <td>{{ t.material_name_snapshot }}</td>
                 <td class="actions">
@@ -53,10 +58,13 @@
                     <form method="post" action="{{ url_for('print_ticket', ticket_id=t.id) }}" class="inline-form">
                         <button type="submit">Reprint</button>
                     </form>
+                    <form method="post" action="{{ url_for('void_ticket', ticket_id=t.id) }}" class="inline-form" onsubmit="return confirm('Are you sure you want to void this ticket? This action cannot be undone.');">
+                        <button type="submit" class="danger">Void</button>
+                    </form>
                 </td>
             </tr>
             {% else %}
-            <tr><td colspan="8">No tickets found.</td></tr>
+            <tr><td colspan="9">No tickets found.</td></tr>
             {% endfor %}
         </tbody>
     </table>

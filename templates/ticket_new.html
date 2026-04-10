@@ -16,7 +16,7 @@
             <datalist id="jobs_list">
                 {% for job in jobs %}
                     <!-- <option value="{{ job.job_code }} - {{ job.job_name }}" data-id="{{ job.id }}" data-customer="{{ job.customer or '' }}"></option> -->
-                     <option value="{{ job.job_code }} - {{ job.job_name }}" data-id="{{ job.id }}"></option>
+                     <option value="{{ job.job_code }} - {{ job.job_name }}" data-id="{{ job.job_key }}"></option>
                 {% endfor %}
             </datalist>
         </label>
@@ -146,5 +146,33 @@
 
     useNowCheckbox.addEventListener("change", toggleDateInput);
     toggleDateInput();
+
+    const directionSelect = document.querySelector('select[name="direction"]');
+    const materialDatalist = document.getElementById("materials_list");
+
+    async function loadMaterials(direction) {
+        const res = await fetch(`/materials?direction=${direction}`);
+        const data = await res.json();
+
+        // Clear existing options
+        materialDatalist.innerHTML = "";
+
+        // Add new options
+        data.materials.forEach(m => {
+            const option = document.createElement("option");
+            option.value = m.name;
+            option.dataset.id = m.id;
+            materialDatalist.appendChild(option);
+        });
+    }
+
+    // Initial load
+    loadMaterials("IN");
+
+    // On change
+    directionSelect.addEventListener("change", (e) => {
+        loadMaterials(e.target.value);
+    });
+
 </script>
 {% endblock %}
