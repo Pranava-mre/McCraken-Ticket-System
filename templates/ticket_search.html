@@ -39,6 +39,7 @@
                 <th>Tax Exempt</th>
                 <th>Truck</th>
                 <th>Material</th>
+                <th>Cost</th>
                 <th>Actions</th>
             </tr>
         </thead>
@@ -53,6 +54,7 @@
                 <td>{{ t.tax_exempt }}</td>
                 <td>{{ t.truck_number_snapshot }}</td>
                 <td>{{ t.material_name_snapshot }}</td>
+                <td>${{ "%.2f"|format(t.cost or 0) }}</td>
                 <td class="actions">
                     <a href="{{ url_for('ticket_pdf', ticket_id=t.id) }}">PDF</a>
                     <form method="post" action="{{ url_for('print_ticket', ticket_id=t.id) }}" class="inline-form">
@@ -64,7 +66,7 @@
                 </td>
             </tr>
             {% else %}
-            <tr><td colspan="9">No tickets found.</td></tr>
+            <tr><td colspan="10">No tickets found.</td></tr>
             {% endfor %}
         </tbody>
     </table>

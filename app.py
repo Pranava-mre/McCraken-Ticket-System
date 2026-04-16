@@ -2,11 +2,13 @@ import io
 import os
 import csv
 import re
+import hmac
+import threading
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from datetime import timedelta
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, unquote
 from urllib.request import Request, urlopen
 
 import psycopg2
@@ -30,17 +32,156 @@ from reportlab.lib.styles import getSampleStyleSheet
 from psycopg2 import IntegrityError
 from psycopg2.extras import RealDictCursor
 
+BlobServiceClient = None
+ContentSettings = None
+
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 DATA_DIR = BASE_DIR / "data"
-PDF_DIR = BASE_DIR / "tickets_pdf"
 SCHEMA_PATH = BASE_DIR / "schema.sql"
-REPORT_PDF_DIR = BASE_DIR / "reports_pdf"
-REPORT_PDF_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def resolve_storage_dir(env_var_name, default_relative_path):
+    configured_path = os.getenv(env_var_name, "").strip()
+    if configured_path:
+        resolved = Path(configured_path).expanduser()
+        if not resolved.is_absolute():
+            resolved = BASE_DIR / resolved
+    else:
+        resolved = BASE_DIR / default_relative_path
+    resolved.mkdir(parents=True, exist_ok=True)
+    return resolved
+
+
+PDF_DIR = resolve_storage_dir("TICKETS_PDF_DIR", "tickets_pdf")
+REPORT_PDF_DIR = resolve_storage_dir("REPORT_PDF_DIR", "reports_pdf")
 
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "local-dev-secret-key")
+
+_db_init_lock = threading.Lock()
+_db_initialized = False
+
+AZURE_STORAGE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING", "").strip()
+AZURE_STORAGE_CONTAINER = os.getenv("AZURE_STORAGE_CONTAINER", "ticket-pdfs").strip() or "ticket-pdfs"
+AZURE_TICKETS_BLOB_PREFIX = os.getenv("AZURE_TICKETS_BLOB_PREFIX", "tickets").strip().strip("/")
+AZURE_REPORTS_BLOB_PREFIX = os.getenv("AZURE_REPORTS_BLOB_PREFIX", "reports").strip().strip("/")
+AZURE_DOWNLOADS_BLOB_PREFIX = os.getenv("AZURE_DOWNLOADS_BLOB_PREFIX", "downloads").strip().strip("/")
+
+
+def get_blob_service_client():
+    global BlobServiceClient, ContentSettings
+
+    if not AZURE_STORAGE_CONNECTION_STRING:
+        return None
+
+    if BlobServiceClient is None:
+        try:
+            from azure.storage.blob import BlobServiceClient as _BlobServiceClient
+            from azure.storage.blob import ContentSettings as _ContentSettings
+
+            BlobServiceClient = _BlobServiceClient
+            ContentSettings = _ContentSettings
+        except ImportError:
+            app.logger.warning(
+                "Azure Blob connection string is set, but azure-storage-blob package is not installed."
+            )
+            return None
+
+    try:
+        return BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING)
+    except Exception as exc:
+        app.logger.warning("Could not initialize Azure Blob client: %s", exc)
+        return None
+
+
+def upload_pdf_to_blob(blob_name, pdf_bytes):
+    blob_service = get_blob_service_client()
+    if blob_service is None:
+        return None
+
+    container_client = blob_service.get_container_client(AZURE_STORAGE_CONTAINER)
+    try:
+        container_client.create_container()
+    except Exception:
+        pass
+
+    blob_client = container_client.get_blob_client(blob_name)
+    content_settings = ContentSettings(content_type="application/pdf") if ContentSettings else None
+    blob_client.upload_blob(pdf_bytes, overwrite=True, content_settings=content_settings)
+    return blob_client.url
+
+
+def upload_download_audit_blob(category, filename, file_bytes, mimetype):
+    blob_service = get_blob_service_client()
+    if blob_service is None:
+        return None
+
+    safe_category = re.sub(r"[^a-zA-Z0-9_\-]", "_", str(category or "download"))
+    safe_name = re.sub(r"[^a-zA-Z0-9._\-]", "_", str(filename or "file"))
+    stamp = datetime.now().strftime("%Y/%m/%d/%H%M%S_%f")
+    blob_name = (
+        f"{AZURE_DOWNLOADS_BLOB_PREFIX}/{safe_category}/{stamp}_{safe_name}"
+        if AZURE_DOWNLOADS_BLOB_PREFIX
+        else f"{safe_category}/{stamp}_{safe_name}"
+    )
+
+    remote_ip = (request.headers.get("X-Forwarded-For") or request.remote_addr or "")[:120]
+    endpoint = str(request.endpoint or "")[:120]
+
+    metadata = {
+        "endpoint": re.sub(r"[^a-zA-Z0-9_\-]", "_", endpoint),
+        "remote_ip": re.sub(r"[^a-zA-Z0-9_\-:., ]", "_", remote_ip),
+        "downloaded_at": datetime.utcnow().strftime("%Y%m%dT%H%M%SZ"),
+    }
+
+    container_client = blob_service.get_container_client(AZURE_STORAGE_CONTAINER)
+    try:
+        container_client.create_container()
+    except Exception:
+        pass
+
+    blob_client = container_client.get_blob_client(blob_name)
+    content_settings = ContentSettings(content_type=mimetype) if ContentSettings and mimetype else None
+    blob_client.upload_blob(file_bytes, overwrite=True, content_settings=content_settings, metadata=metadata)
+    return blob_client.url
+
+
+def delete_pdf_blob_if_needed(pdf_path):
+    if not pdf_path or not str(pdf_path).lower().startswith("http"):
+        return False
+
+    blob_service = get_blob_service_client()
+    if blob_service is None:
+        return False
+
+    parsed = urlparse(str(pdf_path))
+    marker = f"/{AZURE_STORAGE_CONTAINER}/"
+    idx = parsed.path.find(marker)
+    if idx < 0:
+        return False
+
+    blob_name = unquote(parsed.path[idx + len(marker):]).lstrip("/")
+    if not blob_name:
+        return False
+
+    try:
+        blob_service.get_blob_client(container=AZURE_STORAGE_CONTAINER, blob=blob_name).delete_blob(delete_snapshots="include")
+        return True
+    except Exception as exc:
+        app.logger.warning("Could not delete blob '%s': %s", blob_name, exc)
+        return False
+
+
+def write_temp_pdf_for_print(pdf_bytes, name_prefix):
+    cache_dir = BASE_DIR / "tmp_print"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    path = cache_dir / f"{name_prefix}_{stamp}.pdf"
+    with open(path, "wb") as f:
+        f.write(pdf_bytes)
+    return str(path)
 
 
 def format_ticket_datetime(value):
@@ -201,6 +342,7 @@ def create_db_connection():
 
 
 def get_db():
+    ensure_app_initialized()
     if "db" not in g:
         g.db = create_db_connection()
     return g.db
@@ -224,11 +366,24 @@ def init_db():
         conn.commit()
 
 
+def ensure_app_initialized():
+    global _db_initialized
+    if _db_initialized:
+        return
+
+    with _db_init_lock:
+        if _db_initialized:
+            return
+        init_db()
+        _db_initialized = True
+
+
 def ensure_db_migrations(conn):
     with conn.cursor() as cursor:
         cursor.execute("ALTER TABLE jobs_cache ADD COLUMN IF NOT EXISTS tax_exempt TEXT NOT NULL DEFAULT ''")
         cursor.execute("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS customer_snapshot TEXT NOT NULL DEFAULT ''")
         cursor.execute("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS tax_exempt TEXT NOT NULL DEFAULT ''")
+        cursor.execute("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS cost REAL NOT NULL DEFAULT 0")
         cursor.execute("ALTER TABLE trucks ADD COLUMN IF NOT EXISTS truck_size TEXT NOT NULL DEFAULT ''")
         cursor.execute("ALTER TABLE trucks ADD COLUMN IF NOT EXISTS hauled_by TEXT NOT NULL DEFAULT ''")
         cursor.execute(
@@ -247,13 +402,8 @@ def ensure_db_migrations(conn):
         )
 
 
-init_db()
-
-
 def refresh_jobs_on_startup():
-    print("in this func")
     auto_refresh = os.getenv("AUTO_REFRESH_JOBS_ON_STARTUP", "1").strip().lower()
-    print(auto_refresh)
     if auto_refresh not in {"1", "true", "yes", "on"}:
         app.logger.info("Startup jobs refresh disabled by AUTO_REFRESH_JOBS_ON_STARTUP.")
         return
@@ -293,6 +443,35 @@ def next_ticket_number(db):
     next_value = int(row["last_value"])
     ticket_number = f"DT-{year}-{next_value:06d}"
     return ticket_number, year, next_value
+
+
+def truck_size_to_axle_index(truck_size):
+    size_text = str(truck_size or "").strip().lower()
+    if not size_text:
+        return None
+
+    match = re.search(r"axle\s*([0-9]+(?:\.[0-9]+)?)", size_text)
+    if not match:
+        return None
+
+    axle_value = float(match.group(1))
+    axle_index = int(axle_value)
+    if axle_value != axle_index:
+        return None
+    return axle_index if 1 <= axle_index <= 9 else None
+
+
+def calculate_ticket_cost(truck, material, quantity_num):
+    if not truck or not material:
+        return 0.0
+
+    axle_index = truck_size_to_axle_index(truck.get("truck_size"))
+    if not axle_index:
+        return 0.0
+
+    price_key = f"axle{axle_index}"
+    price_per_load = float(material.get(price_key) or 0)
+    return round(price_per_load * quantity_num, 2)
 
 
 def to_pdf_bytes(ticket):
@@ -363,6 +542,7 @@ def to_pdf_bytes(ticket):
 
         draw_field("Quantity", f"{ticket['quantity']}", left + 10, y_top - 182, 180, 24, label_width=58)
         draw_field("Unit", ticket["unit"], left + 195, y_top - 182, 120, 24, label_width=34)
+        draw_field("Cost", f"${float(ticket.get('cost', 0) or 0):.2f}", left + 320, y_top - 182, box_w - 330, 24, label_width=34)
 
         notes_y = y_top - 212
         notes_h = 88
@@ -420,7 +600,7 @@ def report_to_pdf_bytes(tickets, totals_by_unit, totals_by_material, filters):
 
     # ---- Tickets Table ----
     table_data = [
-        ["Ticket #", "Date/Time", "Customer", "Dir", "Material", "Qty", "Unit"]
+        ["Ticket #", "Date/Time", "Customer", "Dir", "Material", "Qty", "Unit", "Cost"]
     ]
 
     for t in tickets:
@@ -432,11 +612,12 @@ def report_to_pdf_bytes(tickets, totals_by_unit, totals_by_material, filters):
             Paragraph(t["material_name_snapshot"], normal),
             Paragraph(f"{t['quantity']:.2f}", normal),
             Paragraph(t["unit"], normal),
+            Paragraph(f"${float(t.get('cost', 0) or 0):.2f}", normal),
         ])
 
     ticket_table = Table(
         table_data,
-        colWidths=[75, 85, 120, 35, 110, 45, 40],
+        colWidths=[65, 85, 110, 30, 90, 40, 35, 55],
         repeatRows=1
     )
 
@@ -444,6 +625,7 @@ def report_to_pdf_bytes(tickets, totals_by_unit, totals_by_material, filters):
         ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
         ("GRID", (0, 0), (-1, -1), 1, colors.black),
         ("ALIGN", (5, 1), (5, -1), "RIGHT"),
+        ("ALIGN", (7, 1), (7, -1), "RIGHT"),
         ("ALIGN", (3, 1), (3, -1), "CENTER"),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
@@ -455,9 +637,9 @@ def report_to_pdf_bytes(tickets, totals_by_unit, totals_by_material, filters):
     # ---- Totals By Unit ----
     elements.append(Paragraph("Totals By Unit", bold))
     totals_unit_table = Table(
-        [["Unit", "Total Quantity"]] +
-        [[r["unit"], f"{r['total_quantity']:.2f}"] for r in totals_by_unit],
-        colWidths=[100, 120],
+        [["Unit", "Total Quantity", "Total Cost"]] +
+        [[r["unit"], f"{r['total_quantity']:.2f}", f"${float(r.get('total_cost', 0) or 0):.2f}"] for r in totals_by_unit],
+        colWidths=[90, 110, 110],
     )
     totals_unit_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
@@ -469,16 +651,17 @@ def report_to_pdf_bytes(tickets, totals_by_unit, totals_by_material, filters):
     # ---- Totals By Material ----
     elements.append(Paragraph("Totals By Material", bold))
     totals_mat_table = Table(
-        [["Material", "Unit", "Total Quantity"]] +
+        [["Material", "Unit", "Total Quantity", "Total Cost"]] +
         [
             [
                 r["material_name_snapshot"],
                 r["unit"],
                 f"{r['total_quantity']:.2f}",
+                f"${float(r.get('total_cost', 0) or 0):.2f}",
             ]
             for r in totals_by_material
         ],
-        colWidths=[200, 80, 120],
+        colWidths=[180, 70, 100, 100],
     )
     totals_mat_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
@@ -490,8 +673,79 @@ def report_to_pdf_bytes(tickets, totals_by_unit, totals_by_material, filters):
     buffer.seek(0)
     return buffer.read()
 
+
+def materials_report_to_pdf_bytes(materials):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter)
+
+    styles = getSampleStyleSheet()
+    normal = styles["Normal"]
+    bold = styles["Heading3"]
+
+    elements = []
+    elements.append(Paragraph("Materials Export", bold))
+    elements.append(
+        Paragraph(
+            f"Generated: {datetime.now().strftime('%m-%d-%Y %H:%M')}",
+            normal,
+        )
+    )
+    elements.append(Spacer(1, 12))
+
+    table_data = [[
+        "Material", "Direction", "Cat",
+        "Axle 1", "Axle 2", "Axle 3", "Axle 4", "Axle 5", "Axle 6", "VAC Truck", "Axle 8", "Axle 9",
+        "Status",
+    ]]
+
+    for m in materials:
+        table_data.append([
+            Paragraph(str(m["material_name"] or ""), normal),
+            Paragraph(str(m["direction"] or ""), normal),
+            Paragraph(str(m["cat"] or ""), normal),
+            Paragraph(f"{float(m['axle1']):.2f}" if m["axle1"] is not None else "", normal),
+            Paragraph(f"{float(m['axle2']):.2f}" if m["axle2"] is not None else "", normal),
+            Paragraph(f"{float(m['axle3']):.2f}" if m["axle3"] is not None else "", normal),
+            Paragraph(f"{float(m['axle4']):.2f}" if m["axle4"] is not None else "", normal),
+            Paragraph(f"{float(m['axle5']):.2f}" if m["axle5"] is not None else "", normal),
+            Paragraph(f"{float(m['axle6']):.2f}" if m["axle6"] is not None else "", normal),
+            Paragraph(f"{float(m['axle7']):.2f}" if m["axle7"] is not None else "", normal),
+            Paragraph(f"{float(m['axle8']):.2f}" if m["axle8"] is not None else "", normal),
+            Paragraph(f"{float(m['axle9']):.2f}" if m["axle9"] is not None else "", normal),
+            Paragraph("Active" if m["active"] else "Inactive", normal),
+        ])
+
+    table = Table(
+        table_data,
+        colWidths=[90, 45, 30, 38, 38, 38, 38, 38, 38, 45, 38, 38, 45],
+        repeatRows=1,
+    )
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+        ("GRID", (0, 0), (-1, -1), 1, colors.black),
+        ("ALIGN", (2, 1), (11, -1), "RIGHT"),
+        ("ALIGN", (1, 1), (1, -1), "CENTER"),
+        ("ALIGN", (12, 1), (12, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+    ]))
+
+    elements.append(table)
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer.read()
+
 def save_pdf(ticket_number, pdf_bytes):
     year = datetime.now().year
+    if AZURE_STORAGE_CONNECTION_STRING:
+        blob_name = f"{AZURE_TICKETS_BLOB_PREFIX}/{year}/{ticket_number}.pdf" if AZURE_TICKETS_BLOB_PREFIX else f"{year}/{ticket_number}.pdf"
+        try:
+            blob_url = upload_pdf_to_blob(blob_name, pdf_bytes)
+            if blob_url:
+                return blob_url
+        except Exception as exc:
+            app.logger.warning("Azure Blob upload failed for ticket %s: %s. Falling back to local storage.", ticket_number, exc)
+
     year_dir = PDF_DIR / str(year)
     year_dir.mkdir(parents=True, exist_ok=True)
     pdf_path = year_dir / f"{ticket_number}.pdf"
@@ -522,6 +776,59 @@ def is_active_column_boolean(db, table_name):
     return bool(row) and row["data_type"] == "boolean"
 
 
+def validate_material_admin_password(admin_password):
+    configured_password = os.getenv("MATERIAL_ADMIN_PASSWORD", "").strip()
+    if not configured_password:
+        return False, "Material admin password is not configured on server."
+    if not hmac.compare_digest(admin_password, configured_password):
+        return False, "Password failed."
+    return True, ""
+
+
+def parse_material_active_value(raw_value, use_boolean):
+    value = str(raw_value or "").strip().upper()
+    if value in {"1", "TRUE", "T", "YES", "Y", "ACTIVE", "A"}:
+        return True if use_boolean else 1
+    if value in {"0", "FALSE", "F", "NO", "N", "INACTIVE", "I"}:
+        return False if use_boolean else 0
+    raise ValueError("active must be 1/0, TRUE/FALSE, YES/NO, ACTIVE/INACTIVE")
+
+
+def parse_materials_upload_rows(uploaded_file, filename):
+    ext = Path(filename or "").suffix.lower()
+
+    if ext == ".csv":
+        text_stream = io.TextIOWrapper(uploaded_file.stream, encoding="utf-8-sig", newline="")
+        reader = csv.DictReader(text_stream)
+        rows = []
+        for idx, row in enumerate(reader, start=2):
+            rows.append((idx, row))
+        return rows
+
+    if ext == ".xlsx":
+        try:
+            from openpyxl import load_workbook
+        except ImportError as exc:
+            raise RuntimeError("Excel upload requires the openpyxl package.") from exc
+
+        workbook = load_workbook(uploaded_file, data_only=True)
+        sheet = workbook.active
+        header_row = next(sheet.iter_rows(min_row=1, max_row=1, values_only=True), None)
+        if not header_row:
+            return []
+
+        headers = [str(col).strip() if col is not None else "" for col in header_row]
+        rows = []
+        for row_number, values in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
+            row_dict = {}
+            for header, value in zip(headers, values):
+                row_dict[header] = "" if value is None else str(value)
+            rows.append((row_number, row_dict))
+        return rows
+
+    raise RuntimeError("Unsupported file type. Please upload a .csv or .xlsx file.")
+
+
 def upsert_job_cache_row(db, job_code, job_name, customer, tax_exempt, active, source_updated_at, refreshed_at):
     with db.cursor() as cursor:
         cursor.execute(
@@ -541,7 +848,7 @@ def upsert_job_cache_row(db, job_code, job_name, customer, tax_exempt, active, s
 
 
 def refresh_jobs_cache(db):
-    print("Refreshing jobs cache...")
+    app.logger.info("Refreshing jobs cache...")
     csv_file = resolve_jobs_csv_path()
     if csv_file is not None:
 
@@ -612,7 +919,7 @@ def refresh_jobs_cache(db):
                     refreshed_at=now,
                 )
                 synced += 1
-        print(f"Jobs cache refreshed from CSV. {synced} rows synced.")
+        app.logger.info("Jobs cache refreshed from CSV. %s rows synced.", synced)
 
         return synced
 
@@ -778,6 +1085,20 @@ def list_customers(db):
         )
         return cursor.fetchall()
 
+
+def get_customer_by_name(db, customer_name):
+    with db.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT id, customer_name
+            FROM customers
+            WHERE LOWER(TRIM(customer_name)) = LOWER(TRIM(%s))
+            LIMIT 1
+            """,
+            (customer_name,),
+        )
+        return cursor.fetchone()
+
 def list_trucks(db):
     with db.cursor() as cursor:
         cursor.execute(
@@ -841,11 +1162,19 @@ def new_ticket():
             job, selected_job_source = get_selected_job(db, job_id)
         if truck_id:
             with db.cursor() as cursor:
-                cursor.execute("SELECT id, truck_number FROM trucks_main WHERE id = %s", (truck_id,))
+                cursor.execute("SELECT id, truck_number, truck_size FROM trucks_main WHERE id = %s", (truck_id,))
                 truck = cursor.fetchone()
         if material_id:
             with db.cursor() as cursor:
-                cursor.execute("SELECT id, material AS material_name FROM material_price WHERE id = %s", (material_id,))
+                cursor.execute(
+                    """
+                    SELECT id, material AS material_name,
+                           axle1, axle2, axle3, axle4, axle5, axle6, axle7, axle8, axle9
+                    FROM material_price
+                    WHERE id = %s
+                    """,
+                    (material_id,),
+                )
                 material = cursor.fetchone()
         if customer_id:
             with db.cursor() as cursor:
@@ -890,6 +1219,8 @@ def new_ticket():
             flash("Quantity must be numeric.", "error")
             return redirect(url_for("new_ticket"))
 
+        ticket_cost = calculate_ticket_cost(truck, material, quantity_num)
+
         try:
             ticket_number, ticket_year, seq = next_ticket_number(db)
             if use_now:
@@ -916,11 +1247,12 @@ def new_ticket():
                 "material_name_snapshot": material_name_snapshot,
                 "quantity": quantity_num,
                 "unit": unit,
+                "cost": ticket_cost,
                 "notes": notes,
             }
             pdf_bytes = to_pdf_bytes(row)
             pdf_path = save_pdf(ticket_number, pdf_bytes)
-            print(f"Generated PDF for ticket {ticket_number} at {pdf_path}")
+            app.logger.info("Generated PDF for ticket %s.", ticket_number)
 
             with db.cursor() as cursor:
                 cursor.execute(
@@ -928,8 +1260,8 @@ def new_ticket():
                 INSERT INTO tickets (
                     ticket_number, ticket_year, ticket_sequence, direction, created_at,
                     job_id, job_code_snapshot, job_name_snapshot, tax_exempt, customer_snapshot, truck_id, truck_number_snapshot,
-                    material_id, material_name_snapshot, quantity, unit, notes, pdf_path, pdf_blob
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    material_id, material_name_snapshot, quantity, unit, cost, notes, pdf_path, pdf_blob
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     ticket_number,
@@ -948,6 +1280,7 @@ def new_ticket():
                     material_name_snapshot,
                     quantity_num,
                     unit,
+                    ticket_cost,
                     notes,
                     pdf_path,
                     pdf_bytes,
@@ -1019,7 +1352,7 @@ def search_tickets():
     date_to = request.args.get("date_to", "").strip()
 
     query = """
-        SELECT id, ticket_number, created_at, direction, job_code_snapshot, tax_exempt, customer_snapshot, truck_number_snapshot, material_name_snapshot
+        SELECT id, ticket_number, created_at, direction, job_code_snapshot, tax_exempt, customer_snapshot, truck_number_snapshot, material_name_snapshot, cost
         FROM tickets
         WHERE 1 = 1
     """
@@ -1083,7 +1416,7 @@ def reports():
         params.append(material_id)
 
     where_sql = " AND ".join(where)
-    print(f"Report query WHERE clause: {where_sql} with params {params}")
+    app.logger.debug("Report query WHERE clause: %s with params %s", where_sql, params)
 
     with db.cursor() as cursor:
         cursor.execute(
@@ -1100,7 +1433,8 @@ def reports():
             t.material_name_snapshot,
             t.truck_number_snapshot,
             t.quantity,
-            t.unit
+            t.unit,
+            t.cost
         FROM tickets t
         WHERE {where_sql}
         ORDER BY 
@@ -1120,7 +1454,9 @@ def reports():
     with db.cursor() as cursor:
         cursor.execute(
         f"""
-        SELECT t.unit, COALESCE(SUM(t.quantity), 0) AS total_quantity
+         SELECT t.unit,
+             COALESCE(SUM(t.quantity), 0) AS total_quantity,
+             COALESCE(SUM(t.cost), 0) AS total_cost
         FROM tickets t
         WHERE {where_sql}
         GROUP BY t.unit
@@ -1133,7 +1469,10 @@ def reports():
     with db.cursor() as cursor:
         cursor.execute(
         f"""
-        SELECT t.material_name_snapshot, t.unit, COALESCE(SUM(t.quantity), 0) AS total_quantity
+         SELECT t.material_name_snapshot,
+             t.unit,
+             COALESCE(SUM(t.quantity), 0) AS total_quantity,
+             COALESCE(SUM(t.cost), 0) AS total_cost
         FROM tickets t
         WHERE {where_sql}
         GROUP BY t.material_name_snapshot, t.unit
@@ -1204,7 +1543,8 @@ def export_reports_csv():
             t.truck_number_snapshot,
             t.material_name_snapshot,
             t.quantity,
-            t.unit
+            t.unit,
+            t.cost
         FROM tickets t
         WHERE {where_sql}
         ORDER BY t.id DESC
@@ -1217,7 +1557,9 @@ def export_reports_csv():
     with db.cursor() as cursor:
         cursor.execute(
         f"""
-        SELECT t.unit, COALESCE(SUM(t.quantity), 0) AS total_quantity
+         SELECT t.unit,
+             COALESCE(SUM(t.quantity), 0) AS total_quantity,
+             COALESCE(SUM(t.cost), 0) AS total_cost
         FROM tickets t
         WHERE {where_sql}
         GROUP BY t.unit
@@ -1230,7 +1572,10 @@ def export_reports_csv():
     with db.cursor() as cursor:
         cursor.execute(
         f"""
-        SELECT t.material_name_snapshot, t.unit, COALESCE(SUM(t.quantity), 0) AS total_quantity
+         SELECT t.material_name_snapshot,
+             t.unit,
+             COALESCE(SUM(t.quantity), 0) AS total_quantity,
+             COALESCE(SUM(t.cost), 0) AS total_cost
         FROM tickets t
         WHERE {where_sql}
         GROUP BY t.material_name_snapshot, t.unit
@@ -1255,6 +1600,7 @@ def export_reports_csv():
             "Material",
             "Quantity",
             "Unit",
+            "Cost",
         ]
     )
     for t in tickets:
@@ -1270,24 +1616,26 @@ def export_reports_csv():
                 t["material_name_snapshot"],
                 f"{t['quantity']:.2f}",
                 t["unit"],
+                f"{float(t.get('cost', 0) or 0):.2f}",
             ]
         )
 
     writer.writerow([])
     writer.writerow(["Totals by Unit"])
-    writer.writerow(["Unit", "Total Quantity"])
+    writer.writerow(["Unit", "Total Quantity", "Total Cost"])
     for total in totals_by_unit:
-        writer.writerow([total["unit"], f"{total['total_quantity']:.2f}"])
+        writer.writerow([total["unit"], f"{total['total_quantity']:.2f}", f"{float(total.get('total_cost', 0) or 0):.2f}"])
 
     writer.writerow([])
     writer.writerow(["Totals by Material"])
-    writer.writerow(["Material", "Unit", "Total Quantity"])
+    writer.writerow(["Material", "Unit", "Total Quantity", "Total Cost"])
     for total in totals_by_material:
         writer.writerow(
             [
                 total["material_name_snapshot"],
                 total["unit"],
                 f"{total['total_quantity']:.2f}",
+                f"{float(total.get('total_cost', 0) or 0):.2f}",
             ]
         )
 
@@ -1296,11 +1644,23 @@ def export_reports_csv():
     csv_bytes.seek(0)
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    download_filename = f"ticket_report_{stamp}.csv"
+    csv_payload = csv_bytes.getvalue()
+    try:
+        upload_download_audit_blob(
+            category="reports_csv",
+            filename=download_filename,
+            file_bytes=csv_payload,
+            mimetype="text/csv",
+        )
+    except Exception as exc:
+        app.logger.warning("Could not audit-upload report CSV download: %s", exc)
+
     return send_file(
-        csv_bytes,
+        io.BytesIO(csv_payload),
         mimetype="text/csv",
         as_attachment=True,
-        download_name=f"ticket_report_{stamp}.csv",
+        download_name=download_filename,
     )
 @app.get("/reports/print")
 def print_reports():
@@ -1358,7 +1718,9 @@ def print_reports():
     with db.cursor() as cursor:
         cursor.execute(
         f"""
-        SELECT unit, SUM(quantity) AS total_quantity
+         SELECT unit,
+             SUM(quantity) AS total_quantity,
+             SUM(cost) AS total_cost
         FROM tickets t
         WHERE {where_sql}
         GROUP BY unit
@@ -1370,7 +1732,10 @@ def print_reports():
     with db.cursor() as cursor:
         cursor.execute(
         f"""
-        SELECT material_name_snapshot, unit, SUM(quantity) AS total_quantity
+         SELECT material_name_snapshot,
+             unit,
+             SUM(quantity) AS total_quantity,
+             SUM(cost) AS total_cost
         FROM tickets t
         WHERE {where_sql}
         GROUP BY material_name_snapshot, unit
@@ -1393,8 +1758,40 @@ def print_reports():
     )
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    pdf_path = REPORT_PDF_DIR / f"ticket_report_{stamp}.pdf"
+    report_filename = f"ticket_report_{stamp}.pdf"
 
+    if AZURE_STORAGE_CONNECTION_STRING:
+        blob_name = f"{AZURE_REPORTS_BLOB_PREFIX}/{report_filename}" if AZURE_REPORTS_BLOB_PREFIX else report_filename
+        try:
+            upload_pdf_to_blob(blob_name, pdf_bytes)
+        except Exception as exc:
+            app.logger.warning("Azure Blob upload failed for report %s: %s", report_filename, exc)
+
+        if os.name == "nt":
+            try:
+                temp_print_path = write_temp_pdf_for_print(pdf_bytes, "report")
+                print_pdf_file(temp_print_path)
+            except Exception:
+                pass
+
+        try:
+            upload_download_audit_blob(
+                category="reports_pdf",
+                filename=report_filename,
+                file_bytes=pdf_bytes,
+                mimetype="application/pdf",
+            )
+        except Exception as exc:
+            app.logger.warning("Could not audit-upload report PDF download: %s", exc)
+
+        return send_file(
+            io.BytesIO(pdf_bytes),
+            mimetype="application/pdf",
+            as_attachment=True,
+            download_name=report_filename,
+        )
+
+    pdf_path = REPORT_PDF_DIR / report_filename
     with open(pdf_path, "wb") as f:
         f.write(pdf_bytes)
 
@@ -1402,6 +1799,16 @@ def print_reports():
         print_pdf_file(str(pdf_path))
     except Exception:
         pass
+
+    try:
+        upload_download_audit_blob(
+            category="reports_pdf",
+            filename=pdf_path.name,
+            file_bytes=pdf_bytes,
+            mimetype="application/pdf",
+        )
+    except Exception as exc:
+        app.logger.warning("Could not audit-upload local report PDF download: %s", exc)
 
     return send_file(
         pdf_path,
@@ -1420,11 +1827,22 @@ def ticket_pdf(ticket_id):
         flash("Ticket not found.", "error")
         return redirect(url_for("search_tickets"))
 
+    ticket_filename = f"{row['ticket_number']}.pdf"
+    try:
+        upload_download_audit_blob(
+            category="ticket_pdf",
+            filename=ticket_filename,
+            file_bytes=row["pdf_blob"],
+            mimetype="application/pdf",
+        )
+    except Exception as exc:
+        app.logger.warning("Could not audit-upload ticket PDF download: %s", exc)
+
     return send_file(
         io.BytesIO(row["pdf_blob"]),
         mimetype="application/pdf",
         as_attachment=True,
-        download_name=f"{row['ticket_number']}.pdf",
+        download_name=ticket_filename,
     )
 
 
@@ -1432,14 +1850,19 @@ def ticket_pdf(ticket_id):
 def print_ticket(ticket_id):
     db = get_db()
     with db.cursor() as cursor:
-        cursor.execute("SELECT ticket_number, pdf_path FROM tickets WHERE id = %s", (ticket_id,))
+        cursor.execute("SELECT ticket_number, pdf_path, pdf_blob FROM tickets WHERE id = %s", (ticket_id,))
         row = cursor.fetchone()
     if not row:
         flash("Ticket not found.", "error")
         return redirect(url_for("search_tickets"))
 
     try:
-        print_pdf_file(row["pdf_path"])
+        pdf_path = (row.get("pdf_path") or "").strip()
+        if pdf_path and not pdf_path.lower().startswith("http"):
+            print_pdf_file(pdf_path)
+        else:
+            temp_print_path = write_temp_pdf_for_print(row["pdf_blob"], row["ticket_number"])
+            print_pdf_file(temp_print_path)
         flash(f"Print sent for {row['ticket_number']}.", "success")
     except Exception as exc:
         flash(f"Print failed: {exc}", "error")
@@ -1465,9 +1888,12 @@ def void_ticket(ticket_id):
         pdf_path = (row.get("pdf_path") or "").strip()
         if pdf_path:
             try:
-                path_obj = Path(pdf_path)
-                if path_obj.exists():
-                    path_obj.unlink()
+                if pdf_path.lower().startswith("http"):
+                    delete_pdf_blob_if_needed(pdf_path)
+                else:
+                    path_obj = Path(pdf_path)
+                    if path_obj.exists():
+                        path_obj.unlink()
             except OSError:
                 # Ticket is removed from DB even if the old PDF file cleanup fails.
                 pass
@@ -1536,16 +1962,54 @@ def toggle_truck(truck_id):
 def admin_materials():
     db = get_db()
     if request.method == "POST":
+        admin_password = request.form.get("admin_password", "")
         material_name = request.form.get("material_name", "").strip()
+        direction = request.form.get("direction", "").strip().upper()
+        cat_raw = request.form.get("cat", "").strip()
+
+        password_ok, password_message = validate_material_admin_password(admin_password)
+        if not password_ok:
+            flash(f"{password_message} Material was not added.", "error")
+            return redirect(url_for("admin_materials"))
         if not material_name:
             flash("Material name is required.", "error")
             return redirect(url_for("admin_materials"))
+        if direction not in {"IN", "OUT"}:
+            flash("Direction must be IN or OUT.", "error")
+            return redirect(url_for("admin_materials"))
+
+        try:
+            cat = int(cat_raw)
+        except ValueError:
+            flash("Category (Cat) must be a whole number.", "error")
+            return redirect(url_for("admin_materials"))
+
+        axle_values = []
+        for idx in range(1, 10):
+            field_name = f"axle{idx}"
+            value_raw = request.form.get(field_name, "").strip()
+            if not value_raw:
+                flash(f"Axle {idx} price is required.", "error")
+                return redirect(url_for("admin_materials"))
+            try:
+                axle_values.append(float(value_raw))
+            except ValueError:
+                flash(f"Axle {idx} price must be numeric.", "error")
+                return redirect(url_for("admin_materials"))
+
         try:
             active_value = True if is_active_column_boolean(db, "material_price") else 1
             with db.cursor() as cursor:
                 cursor.execute(
-                    "INSERT INTO material_price (material, active, direction) VALUES (%s, %s, 'IN')",
-                    (material_name, active_value),
+                    """
+                    INSERT INTO material_price (
+                        cat, material, direction,
+                        axle1, axle2, axle3, axle4, axle5, axle6, axle7, axle8, axle9,
+                        active
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (cat, material_name, direction, *axle_values, active_value),
                 )
             db.commit()
             flash("Material added.", "success")
@@ -1555,9 +2019,368 @@ def admin_materials():
         return redirect(url_for("admin_materials"))
 
     with db.cursor() as cursor:
-        cursor.execute("SELECT id, material AS material_name, axle1, axle2, axle3, axle4, axle5, axle6, axle7, axle8, axle9, active FROM material_price ORDER BY material")
+        cursor.execute(
+            """
+            SELECT id, cat, material AS material_name, direction,
+                   axle1, axle2, axle3, axle4, axle5, axle6, axle7, axle8, axle9, active
+            FROM material_price
+            ORDER BY active DESC, direction, material
+            """
+        )
         rows = cursor.fetchall()
     return render_template("admin_materials.html", materials=rows)
+
+
+@app.get("/admin/materials/export.pdf")
+def export_materials_pdf():
+    db = get_db()
+    with db.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT id, cat, material AS material_name, direction,
+                   axle1, axle2, axle3, axle4, axle5, axle6, axle7, axle8, axle9, active
+            FROM material_price
+            ORDER BY active DESC, direction, material
+            """
+        )
+        rows = cursor.fetchall()
+
+    pdf_bytes = materials_report_to_pdf_bytes(rows)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"materials_export_{stamp}.pdf"
+
+    try:
+        upload_download_audit_blob(
+            category="materials_pdf",
+            filename=filename,
+            file_bytes=pdf_bytes,
+            mimetype="application/pdf",
+        )
+    except Exception as exc:
+        app.logger.warning("Could not audit-upload materials PDF download: %s", exc)
+
+    return send_file(
+        io.BytesIO(pdf_bytes),
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=filename,
+    )
+
+
+@app.get("/admin/materials/export.csv")
+def export_materials_csv():
+    db = get_db()
+    with db.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT id, cat, material AS material_name, direction,
+                   axle1, axle2, axle3, axle4, axle5, axle6, axle7, axle8, axle9, active
+            FROM material_price
+            ORDER BY id
+            """
+        )
+        rows = cursor.fetchall()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "id",
+        "cat",
+        "material_name",
+        "direction",
+        "axle1",
+        "axle2",
+        "axle3",
+        "axle4",
+        "axle5",
+        "axle6",
+        "axle7",
+        "axle8",
+        "axle9",
+        "active",
+    ])
+
+    for row in rows:
+        writer.writerow([
+            row["id"],
+            row["cat"],
+            row["material_name"],
+            row["direction"],
+            row["axle1"],
+            row["axle2"],
+            row["axle3"],
+            row["axle4"],
+            row["axle5"],
+            row["axle6"],
+            row["axle7"],
+            row["axle8"],
+            row["axle9"],
+            1 if row["active"] else 0,
+        ])
+
+    csv_bytes = output.getvalue().encode("utf-8")
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"materials_export_{stamp}.csv"
+
+    try:
+        upload_download_audit_blob(
+            category="materials_csv",
+            filename=filename,
+            file_bytes=csv_bytes,
+            mimetype="text/csv",
+        )
+    except Exception as exc:
+        app.logger.warning("Could not audit-upload materials CSV download: %s", exc)
+
+    return send_file(
+        io.BytesIO(csv_bytes),
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name=filename,
+    )
+
+
+@app.post("/admin/materials/import")
+def import_materials_csv():
+    db = get_db()
+    admin_password = request.form.get("admin_password", "")
+    password_ok, password_message = validate_material_admin_password(admin_password)
+    if not password_ok:
+        flash(f"{password_message} CSV was not imported.", "error")
+        return redirect(url_for("admin_materials"))
+
+    uploaded = request.files.get("materials_file")
+    if uploaded is None or not (uploaded.filename or "").strip():
+        flash("Please choose a CSV or Excel file to upload.", "error")
+        return redirect(url_for("admin_materials"))
+
+    try:
+        raw_rows = parse_materials_upload_rows(uploaded, uploaded.filename)
+    except Exception as exc:
+        flash(f"Could not read upload: {exc}", "error")
+        return redirect(url_for("admin_materials"))
+
+    if not raw_rows:
+        flash("Uploaded file contains no data rows.", "error")
+        return redirect(url_for("admin_materials"))
+
+    required_columns = {
+        "id",
+        "cat",
+        "material_name",
+        "direction",
+        "axle1",
+        "axle2",
+        "axle3",
+        "axle4",
+        "axle5",
+        "axle6",
+        "axle7",
+        "axle8",
+        "axle9",
+        "active",
+    }
+
+    sample_columns = {str(k).strip().lower() for k in raw_rows[0][1].keys()}
+    missing = sorted(required_columns - sample_columns)
+    if missing:
+        flash("Missing required columns: " + ", ".join(missing), "error")
+        return redirect(url_for("admin_materials"))
+
+    use_boolean_active = is_active_column_boolean(db, "material_price")
+    parsed_rows = []
+
+    for row_number, row in raw_rows:
+        row_map = {str(k).strip().lower(): row.get(k) for k in row.keys()}
+        try:
+            raw_id = str(row_map.get("id") or "").strip()
+            material_id = int(raw_id) if raw_id else None
+            cat = int(str(row_map.get("cat") or "").strip())
+            material_name = str(row_map.get("material_name") or "").strip()
+            direction = str(row_map.get("direction") or "").strip().upper()
+            if not material_name:
+                raise ValueError("material_name is required")
+            if direction not in {"IN", "OUT"}:
+                raise ValueError("direction must be IN or OUT")
+
+            axle_values = []
+            for idx in range(1, 10):
+                axle_raw = str(row_map.get(f"axle{idx}") or "").strip()
+                axle_values.append(None if axle_raw == "" else float(axle_raw))
+
+            active_value = parse_material_active_value(row_map.get("active"), use_boolean_active)
+
+            parsed_rows.append((
+                material_id,
+                cat,
+                material_name,
+                direction,
+                *axle_values,
+                active_value,
+            ))
+        except ValueError as exc:
+            flash(f"Row {row_number}: {exc}", "error")
+            return redirect(url_for("admin_materials"))
+
+    try:
+        updated_count = 0
+        inserted_count = 0
+        with db.cursor() as cursor:
+            for parsed in parsed_rows:
+                material_id = parsed[0]
+                values = parsed[1:]
+
+                if material_id is not None:
+                    cursor.execute(
+                        """
+                        UPDATE material_price
+                        SET cat = %s,
+                            material = %s,
+                            direction = %s,
+                            axle1 = %s,
+                            axle2 = %s,
+                            axle3 = %s,
+                            axle4 = %s,
+                            axle5 = %s,
+                            axle6 = %s,
+                            axle7 = %s,
+                            axle8 = %s,
+                            axle9 = %s,
+                            active = %s
+                        WHERE id = %s
+                        """,
+                        (*values, material_id),
+                    )
+
+                    if cursor.rowcount > 0:
+                        updated_count += cursor.rowcount
+                        continue
+
+                cursor.execute(
+                    """
+                    INSERT INTO material_price (
+                        cat, material, direction,
+                        axle1, axle2, axle3, axle4, axle5, axle6, axle7, axle8, axle9,
+                        active
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    values,
+                )
+                inserted_count += 1
+
+        db.commit()
+        flash(
+            f"Materials import complete. Updated {updated_count} row(s), inserted {inserted_count} row(s).",
+            "success",
+        )
+    except Exception as exc:
+        db.rollback()
+        flash(f"Could not import materials: {exc}", "error")
+
+    return redirect(url_for("admin_materials"))
+
+
+@app.post("/admin/materials/<int:material_id>/edit")
+def edit_material(material_id):
+    db = get_db()
+    admin_password = request.form.get("admin_password", "")
+
+    password_ok, password_message = validate_material_admin_password(admin_password)
+    if not password_ok:
+        flash(f"{password_message} Material was not updated.", "error")
+        return redirect(url_for("admin_materials"))
+
+    axle_values = []
+    for idx in range(1, 10):
+        field_name = f"axle{idx}"
+        value_raw = request.form.get(field_name, "").strip()
+        if value_raw == "":
+            axle_values.append(None)
+            continue
+        try:
+            axle_values.append(float(value_raw))
+        except ValueError:
+            flash(f"Axle {idx} price must be numeric.", "error")
+            return redirect(url_for("admin_materials"))
+
+    try:
+        with db.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE material_price
+                SET axle1 = %s,
+                    axle2 = %s,
+                    axle3 = %s,
+                    axle4 = %s,
+                    axle5 = %s,
+                    axle6 = %s,
+                    axle7 = %s,
+                    axle8 = %s,
+                    axle9 = %s
+                WHERE id = %s
+                """,
+                (*axle_values, material_id),
+            )
+            if cursor.rowcount == 0:
+                db.rollback()
+                flash("Material not found.", "error")
+                return redirect(url_for("admin_materials"))
+        db.commit()
+        flash("Material updated.", "success")
+    except Exception as exc:
+        db.rollback()
+        flash(f"Could not update material: {exc}", "error")
+
+    return redirect(url_for("admin_materials"))
+
+
+@app.route("/admin/customers", methods=["GET", "POST"])
+def admin_customers():
+    db = get_db()
+    if request.method == "POST":
+        customer_name = request.form.get("customer_name", "").strip()
+        full_address = request.form.get("full_address", "").strip()
+        contact_person = request.form.get("contact_person", "").strip()
+        phone_number = request.form.get("phone_number", "").strip()
+        notes = request.form.get("notes", "").strip()
+
+        if not customer_name:
+            flash("Customer name is required.", "error")
+            return redirect(url_for("admin_customers"))
+
+        existing_customer = get_customer_by_name(db, customer_name)
+        if existing_customer:
+            flash("Customer already exists.", "error")
+            return redirect(url_for("admin_customers"))
+
+        try:
+            with db.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO customers (customer_name, full_address, contact_person, phone_number, notes)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (customer_name, full_address, contact_person, phone_number, notes),
+                )
+            db.commit()
+            flash("Customer added.", "success")
+        except Exception as exc:
+            db.rollback()
+            flash(f"Could not add customer: {exc}", "error")
+
+        return redirect(url_for("admin_customers"))
+
+    with db.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT id, customer_name, full_address, contact_person, phone_number, notes
+            FROM customers
+            ORDER BY customer_name
+            """
+        )
+        rows = cursor.fetchall()
+    return render_template("admin_customers.html", customers=rows)
 
 
 @app.post("/admin/materials/<int:material_id>/toggle")
@@ -1579,8 +2402,10 @@ def toggle_material(material_id):
 
 
 if __name__ == "__main__":
-    # with app.app_context():
-    #     refresh_jobs_on_startup()
+    ensure_app_initialized()
     refresh_jobs_on_startup()
-    app.run(debug=True, host="127.0.0.1", port=5000)
+    host = os.getenv("FLASK_RUN_HOST", "127.0.0.1")
+    port = int(os.getenv("PORT", os.getenv("FLASK_RUN_PORT", "5000")))
+    debug = os.getenv("FLASK_DEBUG", "0").strip().lower() in {"1", "true", "yes", "on"}
+    app.run(debug=debug, host=host, port=port)
     

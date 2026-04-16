@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS tickets (
     material_name_snapshot TEXT NOT NULL,
     quantity REAL NOT NULL,
     unit TEXT NOT NULL,
+    cost REAL NOT NULL DEFAULT 0,
     notes TEXT,
     pdf_path TEXT NOT NULL,
     pdf_blob BYTEA NOT NULL,

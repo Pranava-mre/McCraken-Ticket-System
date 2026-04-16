@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+    <h2>Customer Admin</h2>
+    <form method="post" class="form-grid">
+        <label>Customer Name
+            <input type="text" name="customer_name" required>
+        </label>
+        <label>Contact Person
+            <input type="text" name="contact_person">
+        </label>
+        <label>Phone Number
+            <input type="text" name="phone_number">
+        </label>
+        <label class="full">Full Address
+            <textarea name="full_address" rows="2"></textarea>
+        </label>
+        <label class="full">Notes
+            <textarea name="notes" rows="3"></textarea>
+        </label>
+        <div class="actions full">
+            <button type="submit">Add Customer</button>
+            <a class="field-link" href="{{ url_for('new_ticket') }}">Back to New Ticket</a>
+        </div>
+    </form>
+</section>
+
+<section class="card">
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Customer</th>
+                    <th>Contact Person</th>
+                    <th>Phone Number</th>
+                    <th>Full Address</th>
+                    <th>Notes</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for customer in customers %}
+                <tr>
+                    <td>{{ customer.customer_name }}</td>
+                    <td>{{ customer.contact_person }}</td>
+                    <td>{{ customer.phone_number }}</td>
+                    <td>{{ customer.full_address }}</td>
+                    <td>{{ customer.notes }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="5">No customers found.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endblock %}

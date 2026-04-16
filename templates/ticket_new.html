@@ -22,7 +22,8 @@
         </label>
 
         <label>Customer
-            <input type="text" id="customer_search" name="customer_entry" list="customers_list" placeholder="Type or enter new customer" autocomplete="off" required>
+            <a class="field-link" href="{{ url_for('admin_customers') }}">Add or manage customers</a>
+            <input type="text" id="customer_search" name="customer_entry" list="customers_list" placeholder="Select Customer Name" autocomplete="off" required>
             <input type="hidden" name="customer_id" id="customer_id">
             <datalist id="customers_list">
                 {% for customer in customers %}
@@ -32,7 +33,8 @@
         </label>
 
         <label>Truck
-            <input type="text" id="truck_search" name="truck_entry" list="trucks_list" placeholder="Type or enter new truck" autocomplete="off" required>
+            <a class="field-link" href="{{ url_for('admin_trucks') }}">Add or manage trucks</a>
+            <input type="text" id="truck_search" name="truck_entry" list="trucks_list" placeholder="Select Truck Number" autocomplete="off" required>
             <input type="hidden" name="truck_id" id="truck_id">
             <datalist id="trucks_list">
                 {% for truck in trucks %}
@@ -42,7 +44,7 @@
         </label>
 
         <label>Material
-            <input type="text" id="material_search" name="material_entry" list="materials_list" placeholder="Type or enter new material" autocomplete="off" required>
+            <input type="text" id="material_search" name="material_entry" list="materials_list" placeholder="Select Material" autocomplete="off" required>
             <input type="hidden" name="material_id" id="material_id">
             <datalist id="materials_list">
                 {% for material in materials %}

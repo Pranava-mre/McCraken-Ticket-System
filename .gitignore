@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+
+# Runtime/generated files
+tickets_pdf/
+reports_pdf/
+tmp_print/
+
+# Local data/cache artifacts
+data/jobs_remote_cache.csv
+
+# OS/editor
+.vscode/
+.DS_Store
+Thumbs.db

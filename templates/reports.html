@@ -66,6 +66,7 @@
                 <tr>
                     <th>Unit</th>
                     <th>Total Quantity</th>
+                    <th>Total Cost</th>
                 </tr>
             </thead>
             <tbody>
@@ -73,6 +74,7 @@
                     <tr>
                         <td>{{ total.unit }}</td>
                         <td>{{ "%.2f"|format(total.total_quantity) }}</td>
+                        <td>${{ "%.2f"|format(total.total_cost or 0) }}</td>
                     </tr>
                 {% endfor %}
             </tbody>
@@ -91,6 +93,7 @@
                     <th>Material</th>
                     <th>Unit</th>
                     <th>Total Quantity</th>
+                    <th>Total Cost</th>
                 </tr>
             </thead>
             <tbody>
@@ -99,6 +102,7 @@
                         <td>{{ total.material_name_snapshot }}</td>
                         <td>{{ total.unit }}</td>
                         <td>{{ "%.2f"|format(total.total_quantity) }}</td>
+                        <td>${{ "%.2f"|format(total.total_cost or 0) }}</td>
                     </tr>
                 {% endfor %}
             </tbody>
@@ -124,6 +128,7 @@
                     <th>Material</th>
                     <th>Quantity</th>
                     <th>Unit</th>
+                    <th>Cost</th>
                 </tr>
             </thead>
             <tbody>
@@ -139,6 +144,7 @@
                         <td>{{ t.material_name_snapshot }}</td>
                         <td>{{ "%.2f"|format(t.quantity) }}</td>
                         <td>{{ t.unit }}</td>
+                        <td>${{ "%.2f"|format(t.cost or 0) }}</td>
                     </tr>
                 {% endfor %}
             </tbody>
