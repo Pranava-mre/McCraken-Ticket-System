@@ -4,7 +4,7 @@
     <div class="materials-header">
         <h2>Material Admin</h2>
         <div class="materials-header-links">
-            <a href="{{ url_for('export_materials_pdf') }}">Export PDF</a>
+            <a href="{{ url_for('export_materials_pdf') }}">Download Report File</a>
             <a href="{{ url_for('export_materials_csv') }}">Download CSV</a>
         </div>
     </div>
@@ -17,53 +17,6 @@
         </label>
         <div class="actions">
             <button type="submit">Upload CSV</button>
-        </div>
-    </form>
-    <form method="post" class="form-grid">
-        <label>Admin Password
-            <input type="password" name="admin_password" required>
-        </label>
-        <label>Category (Cat)
-            <input type="number" name="cat" step="1" required>
-        </label>
-        <label>Material Name
-            <input type="text" name="material_name" required>
-        </label>
-        <label>Direction
-            <select name="direction" required>
-                <option value="IN">IN</option>
-                <option value="OUT">OUT</option>
-            </select>
-        </label>
-        <label>Axle 1 Price
-            <input type="number" name="axle1" step="0.01" required>
-        </label>
-        <label>Axle 2 Price
-            <input type="number" name="axle2" step="0.01" required>
-        </label>
-        <label>Axle 3 Price
-            <input type="number" name="axle3" step="0.01" required>
-        </label>
-        <label>Axle 4 Price
-            <input type="number" name="axle4" step="0.01" required>
-        </label>
-        <label>Axle 5 Price
-            <input type="number" name="axle5" step="0.01" required>
-        </label>
-        <label>Axle 6 Price
-            <input type="number" name="axle6" step="0.01" required>
-        </label>
-        <label>VAC Truck Price
-            <input type="number" name="axle7" step="0.01" required>
-        </label>
-        <label>Axle 8 Price
-            <input type="number" name="axle8" step="0.01" required>
-        </label>
-        <label>Axle 9 Price
-            <input type="number" name="axle9" step="0.01" required>
-        </label>
-        <div class="actions full">
-            <button type="submit">Add Material</button>
         </div>
     </form>
 </section>
@@ -86,7 +39,6 @@
                 <th>Axle 8</th>
                 <th>Axle 9</th>
                 <th>Status</th>
-                <th>Action</th>
             </tr>
         </thead>
         <tbody>
@@ -95,30 +47,19 @@
                 <td>{{ m.material_name }}</td>
                 <td>{{ m.direction }}</td>
                 <td>{{ m.cat }}</td>
-                <td><input type="number" name="axle1" step="0.01" value="{{ m.axle1 if m.axle1 is not none else '' }}" form="edit-material-{{ m.id }}"></td>
-                <td><input type="number" name="axle2" step="0.01" value="{{ m.axle2 if m.axle2 is not none else '' }}" form="edit-material-{{ m.id }}"></td>
-                <td><input type="number" name="axle3" step="0.01" value="{{ m.axle3 if m.axle3 is not none else '' }}" form="edit-material-{{ m.id }}"></td>
-                <td><input type="number" name="axle4" step="0.01" value="{{ m.axle4 if m.axle4 is not none else '' }}" form="edit-material-{{ m.id }}"></td>
-                <td><input type="number" name="axle5" step="0.01" value="{{ m.axle5 if m.axle5 is not none else '' }}" form="edit-material-{{ m.id }}"></td>
-                <td><input type="number" name="axle6" step="0.01" value="{{ m.axle6 if m.axle6 is not none else '' }}" form="edit-material-{{ m.id }}"></td>
-                <td><input type="number" name="axle7" step="0.01" value="{{ m.axle7 if m.axle7 is not none else '' }}" form="edit-material-{{ m.id }}"></td>
-                <td><input type="number" name="axle8" step="0.01" value="{{ m.axle8 if m.axle8 is not none else '' }}" form="edit-material-{{ m.id }}"></td>
-                <td><input type="number" name="axle9" step="0.01" value="{{ m.axle9 if m.axle9 is not none else '' }}" form="edit-material-{{ m.id }}"></td>
+                <td>{{ m.axle1 if m.axle1 is not none else '' }}</td>
+                <td>{{ m.axle2 if m.axle2 is not none else '' }}</td>
+                <td>{{ m.axle3 if m.axle3 is not none else '' }}</td>
+                <td>{{ m.axle4 if m.axle4 is not none else '' }}</td>
+                <td>{{ m.axle5 if m.axle5 is not none else '' }}</td>
+                <td>{{ m.axle6 if m.axle6 is not none else '' }}</td>
+                <td>{{ m.axle7 if m.axle7 is not none else '' }}</td>
+                <td>{{ m.axle8 if m.axle8 is not none else '' }}</td>
+                <td>{{ m.axle9 if m.axle9 is not none else '' }}</td>
                 <td>{{ "Active" if m.active else "Inactive" }}</td>
-                <td>
-                    <div class="actions actions-column">
-                        <form id="edit-material-{{ m.id }}" method="post" action="{{ url_for('edit_material', material_id=m.id) }}">
-                            <input type="password" name="admin_password" placeholder="Password" required>
-                            <button type="submit">Save</button>
-                        </form>
-                        <form method="post" action="{{ url_for('toggle_material', material_id=m.id) }}">
-                            <button type="submit">{{ "Disable" if m.active else "Enable" }}</button>
-                        </form>
-                    </div>
-                </td>
             </tr>
             {% else %}
-            <tr><td colspan="14">No materials found.</td></tr>
+            <tr><td colspan="13">No materials found.</td></tr>
             {% endfor %}
         </tbody>
     </table>

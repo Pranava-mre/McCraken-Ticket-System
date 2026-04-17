@@ -68,6 +68,7 @@ AZURE_STORAGE_CONTAINER = os.getenv("AZURE_STORAGE_CONTAINER", "ticket-pdfs").st
 AZURE_TICKETS_BLOB_PREFIX = os.getenv("AZURE_TICKETS_BLOB_PREFIX", "tickets").strip().strip("/")
 AZURE_REPORTS_BLOB_PREFIX = os.getenv("AZURE_REPORTS_BLOB_PREFIX", "reports").strip().strip("/")
 AZURE_DOWNLOADS_BLOB_PREFIX = os.getenv("AZURE_DOWNLOADS_BLOB_PREFIX", "downloads").strip().strip("/")
+AZURE_JOBS_CACHE_BLOB_NAME = os.getenv("AZURE_JOBS_CACHE_BLOB_NAME", "jobs_cache/jobs_cache.csv").strip().strip("/")
 
 
 def get_blob_service_client():
@@ -148,6 +149,40 @@ def upload_download_audit_blob(category, filename, file_bytes, mimetype):
     return blob_client.url
 
 
+def upload_jobs_cache_blob(file_bytes):
+    blob_service = get_blob_service_client()
+    if blob_service is None or not AZURE_JOBS_CACHE_BLOB_NAME:
+        return None
+
+    container_client = blob_service.get_container_client(AZURE_STORAGE_CONTAINER)
+    try:
+        container_client.create_container()
+    except Exception:
+        pass
+
+    blob_client = container_client.get_blob_client(AZURE_JOBS_CACHE_BLOB_NAME)
+    content_settings = ContentSettings(content_type="text/csv") if ContentSettings else None
+    blob_client.upload_blob(file_bytes, overwrite=True, content_settings=content_settings)
+    return blob_client.url
+
+
+def download_jobs_cache_blob():
+    blob_service = get_blob_service_client()
+    if blob_service is None or not AZURE_JOBS_CACHE_BLOB_NAME:
+        return None
+
+    try:
+        blob_client = blob_service.get_blob_client(
+            container=AZURE_STORAGE_CONTAINER,
+            blob=AZURE_JOBS_CACHE_BLOB_NAME,
+        )
+        content = blob_client.download_blob().readall()
+        return content if content else None
+    except Exception as exc:
+        app.logger.warning("Could not download jobs cache blob '%s': %s", AZURE_JOBS_CACHE_BLOB_NAME, exc)
+        return None
+
+
 def delete_pdf_blob_if_needed(pdf_path):
     if not pdf_path or not str(pdf_path).lower().startswith("http"):
         return False
@@ -221,8 +256,30 @@ def resolve_jobs_csv_path():
         try:
             download_jobs_csv_from_url(csv_url, cache_path)
             app.logger.info("Jobs CSV downloaded from URL to %s", cache_path)
+
+            try:
+                with open(cache_path, "rb") as f:
+                    blob_url = upload_jobs_cache_blob(f.read())
+                if blob_url:
+                    app.logger.info("Jobs CSV uploaded to blob cache at %s", blob_url)
+            except Exception as exc:
+                app.logger.warning("Jobs CSV upload to blob cache failed: %s", exc)
+
             return cache_path
         except Exception as exc:
+            blob_content = download_jobs_cache_blob()
+            if blob_content:
+                tmp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
+                with open(tmp_path, "wb") as f:
+                    f.write(blob_content)
+                tmp_path.replace(cache_path)
+                app.logger.warning(
+                    "Jobs CSV URL download failed (%s). Using blob cache '%s'.",
+                    exc,
+                    AZURE_JOBS_CACHE_BLOB_NAME,
+                )
+                return cache_path
+
             if cache_path.exists():
                 app.logger.warning(
                     "Jobs CSV URL download failed (%s). Using cached file at %s.",
@@ -1958,66 +2015,9 @@ def toggle_truck(truck_id):
     return redirect(url_for("admin_trucks"))
 
 
-@app.route("/admin/materials", methods=["GET", "POST"])
+@app.get("/admin/materials")
 def admin_materials():
     db = get_db()
-    if request.method == "POST":
-        admin_password = request.form.get("admin_password", "")
-        material_name = request.form.get("material_name", "").strip()
-        direction = request.form.get("direction", "").strip().upper()
-        cat_raw = request.form.get("cat", "").strip()
-
-        password_ok, password_message = validate_material_admin_password(admin_password)
-        if not password_ok:
-            flash(f"{password_message} Material was not added.", "error")
-            return redirect(url_for("admin_materials"))
-        if not material_name:
-            flash("Material name is required.", "error")
-            return redirect(url_for("admin_materials"))
-        if direction not in {"IN", "OUT"}:
-            flash("Direction must be IN or OUT.", "error")
-            return redirect(url_for("admin_materials"))
-
-        try:
-            cat = int(cat_raw)
-        except ValueError:
-            flash("Category (Cat) must be a whole number.", "error")
-            return redirect(url_for("admin_materials"))
-
-        axle_values = []
-        for idx in range(1, 10):
-            field_name = f"axle{idx}"
-            value_raw = request.form.get(field_name, "").strip()
-            if not value_raw:
-                flash(f"Axle {idx} price is required.", "error")
-                return redirect(url_for("admin_materials"))
-            try:
-                axle_values.append(float(value_raw))
-            except ValueError:
-                flash(f"Axle {idx} price must be numeric.", "error")
-                return redirect(url_for("admin_materials"))
-
-        try:
-            active_value = True if is_active_column_boolean(db, "material_price") else 1
-            with db.cursor() as cursor:
-                cursor.execute(
-                    """
-                    INSERT INTO material_price (
-                        cat, material, direction,
-                        axle1, axle2, axle3, axle4, axle5, axle6, axle7, axle8, axle9,
-                        active
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (cat, material_name, direction, *axle_values, active_value),
-                )
-            db.commit()
-            flash("Material added.", "success")
-        except IntegrityError:
-            db.rollback()
-            flash("Material already exists.", "error")
-        return redirect(url_for("admin_materials"))
-
     with db.cursor() as cursor:
         cursor.execute(
             """
@@ -2283,55 +2283,7 @@ def import_materials_csv():
 
 @app.post("/admin/materials/<int:material_id>/edit")
 def edit_material(material_id):
-    db = get_db()
-    admin_password = request.form.get("admin_password", "")
-
-    password_ok, password_message = validate_material_admin_password(admin_password)
-    if not password_ok:
-        flash(f"{password_message} Material was not updated.", "error")
-        return redirect(url_for("admin_materials"))
-
-    axle_values = []
-    for idx in range(1, 10):
-        field_name = f"axle{idx}"
-        value_raw = request.form.get(field_name, "").strip()
-        if value_raw == "":
-            axle_values.append(None)
-            continue
-        try:
-            axle_values.append(float(value_raw))
-        except ValueError:
-            flash(f"Axle {idx} price must be numeric.", "error")
-            return redirect(url_for("admin_materials"))
-
-    try:
-        with db.cursor() as cursor:
-            cursor.execute(
-                """
-                UPDATE material_price
-                SET axle1 = %s,
-                    axle2 = %s,
-                    axle3 = %s,
-                    axle4 = %s,
-                    axle5 = %s,
-                    axle6 = %s,
-                    axle7 = %s,
-                    axle8 = %s,
-                    axle9 = %s
-                WHERE id = %s
-                """,
-                (*axle_values, material_id),
-            )
-            if cursor.rowcount == 0:
-                db.rollback()
-                flash("Material not found.", "error")
-                return redirect(url_for("admin_materials"))
-        db.commit()
-        flash("Material updated.", "success")
-    except Exception as exc:
-        db.rollback()
-        flash(f"Could not update material: {exc}", "error")
-
+    flash("Direct material editing is disabled. Use CSV upload to update materials.", "error")
     return redirect(url_for("admin_materials"))
 
 
@@ -2385,19 +2337,7 @@ def admin_customers():
 
 @app.post("/admin/materials/<int:material_id>/toggle")
 def toggle_material(material_id):
-    db = get_db()
-    with db.cursor() as cursor:
-        if is_active_column_boolean(db, "material_price"):
-            cursor.execute(
-                "UPDATE material_price SET active = NOT COALESCE(active, FALSE) WHERE id = %s",
-                (material_id,),
-            )
-        else:
-            cursor.execute(
-                "UPDATE material_price SET active = CASE WHEN COALESCE(active, 0) = 1 THEN 0 ELSE 1 END WHERE id = %s",
-                (material_id,),
-            )
-    db.commit()
+    flash("Direct material status changes are disabled. Use CSV upload to update materials.", "error")
     return redirect(url_for("admin_materials"))
 
 
