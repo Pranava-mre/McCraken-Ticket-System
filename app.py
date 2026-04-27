@@ -553,7 +553,7 @@ def calculate_ticket_cost(truck, material, quantity_num):
     return round(price_per_load * quantity_num, 2)
 
 
-def to_pdf_bytes(ticket):
+# def to_pdf_bytes(ticket):
     buffer = io.BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=letter)
     width, height = letter
@@ -654,6 +654,255 @@ def to_pdf_bytes(ticket):
     draw_ticket_page("Driver Copy - Signature Required", True)
     draw_ticket_page("Internal Billing Copy", False)
     pdf.save()
+    buffer.seek(0)
+    return buffer.read()
+
+def to_pdf_bytes(ticket):
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
+
+    company_header_raw = os.getenv("COMPANY_HEADER", "").strip()
+    if company_header_raw:
+        company_header_lines = [line.strip() for line in company_header_raw.split("|") if line.strip()]
+    else:
+        company_header_lines = [
+            "McCracken Materials, LLC",
+            "13675 McCracken Road",
+            "Garfield Heights, Ohio 44125",
+            "Phone: (216) 206-2600",
+        ]
+
+    def draw_field(label, value, x, y, w, h, label_width=70, font_size=8):
+        pdf.rect(x, y - h, w, h)
+        pdf.setFont("Helvetica-Bold", font_size)
+        pdf.drawString(x + 4, y - 12, str(label))
+        pdf.line(x + label_width, y - h, x + label_width, y)
+        pdf.setFont("Helvetica", font_size)
+        pdf.drawString(x + label_width + 4, y - 12, str(value or ""))
+
+    def draw_ticket_section(copy_title, include_signature_line, section_top, section_bottom):
+        left = 36
+        right = width - 36
+        box_w = right - left
+
+        section_h = section_top - section_bottom
+
+        pdf.setLineWidth(1)
+        pdf.rect(left, section_bottom + 10, box_w, section_h - 20)
+
+        company_start_y = section_top - 22
+
+        for index, line in enumerate(company_header_lines):
+            if index == 0:
+                pdf.setFont("Helvetica-Bold", 9)
+            else:
+                pdf.setFont("Helvetica", 7)
+
+            pdf.drawCentredString(width / 2, company_start_y - (index * 10), line)
+
+        y_top = section_top - 72
+
+        pdf.setFont("Helvetica-Bold", 13)
+        pdf.drawCentredString(width / 2, y_top, "DUMP TICKET")
+
+        pdf.setFont("Helvetica-Bold", 8)
+        pdf.drawCentredString(width / 2, y_top - 14, copy_title.upper())
+
+        draw_field(
+            "Ticket #",
+            ticket["ticket_number"],
+            left + 10,
+            y_top - 26,
+            250,
+            18,
+            label_width=55,
+            font_size=8
+        )
+
+        draw_field(
+            "Date/Time",
+            format_ticket_datetime(ticket["created_at"]),
+            left + 270,
+            y_top - 26,
+            box_w - 280,
+            18,
+            label_width=62,
+            font_size=8
+        )
+
+        direction_text = "IN  [X]   OUT [ ]" if ticket["direction"] == "IN" else "IN  [ ]   OUT [X]"
+
+        draw_field(
+            "Direction",
+            direction_text,
+            left + 10,
+            y_top - 48,
+            box_w - 20,
+            18,
+            label_width=62,
+            font_size=8
+        )
+
+        draw_field(
+            "Job #",
+            ticket["job_code_snapshot"],
+            left + 10,
+            y_top - 70,
+            180,
+            18,
+            label_width=42,
+            font_size=8
+        )
+
+        draw_field(
+            "Job Name",
+            ticket["job_name_snapshot"],
+            left + 195,
+            y_top - 70,
+            box_w - 205,
+            18,
+            label_width=58,
+            font_size=8
+        )
+
+        draw_field(
+            "Customer",
+            ticket.get("customer_snapshot", ""),
+            left + 10,
+            y_top - 92,
+            box_w - 20,
+            18,
+            label_width=58,
+            font_size=8
+        )
+
+        draw_field(
+            "Truck #",
+            ticket["truck_number_snapshot"],
+            left + 10,
+            y_top - 114,
+            180,
+            18,
+            label_width=50,
+            font_size=8
+        )
+
+        draw_field(
+            "Material",
+            ticket["material_name_snapshot"],
+            left + 195,
+            y_top - 114,
+            box_w - 205,
+            18,
+            label_width=52,
+            font_size=8
+        )
+
+        draw_field(
+            "Quantity",
+            f"{ticket['quantity']}",
+            left + 10,
+            y_top - 136,
+            180,
+            18,
+            label_width=55,
+            font_size=8
+        )
+
+        draw_field(
+            "Unit",
+            ticket["unit"],
+            left + 195,
+            y_top - 136,
+            120,
+            18,
+            label_width=32,
+            font_size=8
+        )
+
+        draw_field(
+            "Cost",
+            f"${float(ticket.get('cost', 0) or 0):.2f}",
+            left + 320,
+            y_top - 136,
+            box_w - 330,
+            18,
+            label_width=34,
+            font_size=8
+        )
+
+        notes_y = y_top - 158
+        notes_h = 42
+
+        pdf.rect(left + 10, notes_y - notes_h, box_w - 20, notes_h)
+
+        pdf.setFont("Helvetica-Bold", 8)
+        pdf.drawString(left + 16, notes_y - 12, "Notes")
+
+        pdf.setFont("Helvetica", 8)
+        note_text = ticket.get("notes", "") or ""
+
+        if len(note_text) > 120:
+            note_text = note_text[:117] + "..."
+
+        pdf.drawString(left + 58, notes_y - 12, note_text)
+
+        if include_signature_line:
+            sig_y = notes_y - notes_h - 12
+
+            draw_field(
+                "Driver Name",
+                "",
+                left + 10,
+                sig_y,
+                (box_w - 30) / 2,
+                18,
+                label_width=62,
+                font_size=8
+            )
+
+            draw_field(
+                "Signature",
+                "",
+                left + 20 + (box_w - 30) / 2,
+                sig_y,
+                (box_w - 30) / 2,
+                18,
+                label_width=58,
+                font_size=8
+            )
+
+        pdf.setFont("Helvetica", 7)
+        pdf.drawRightString(
+            right - 8,
+            section_bottom + 18,
+            f"Printed: {format_ticket_datetime(datetime.now())}"
+        )
+
+    middle_y = height / 2
+
+    draw_ticket_section(
+        "Driver Copy Signature Required",
+        True,
+        section_top=height,
+        section_bottom=middle_y
+    )
+
+    draw_ticket_section(
+        "Internal Billing Copy",
+        False,
+        section_top=middle_y,
+        section_bottom=0
+    )
+
+    pdf.setDash(3, 3)
+    pdf.line(36, middle_y, width - 36, middle_y)
+    pdf.setDash()
+
+    pdf.showPage()
+    pdf.save()
+
     buffer.seek(0)
     return buffer.read()
 
