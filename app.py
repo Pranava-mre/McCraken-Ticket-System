@@ -71,6 +71,18 @@ AZURE_DOWNLOADS_BLOB_PREFIX = os.getenv("AZURE_DOWNLOADS_BLOB_PREFIX", "download
 AZURE_JOBS_CACHE_BLOB_NAME = os.getenv("AZURE_JOBS_CACHE_BLOB_NAME", "jobs_cache/jobs_cache.csv").strip().strip("/")
 
 
+def env_flag(name, default=False):
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+AUTO_DB_BOOTSTRAP = env_flag("AUTO_DB_BOOTSTRAP", True)
+PG_CONNECT_TIMEOUT = int(os.getenv("PG_CONNECT_TIMEOUT", "8").strip() or "8")
+MAX_JOB_OPTIONS = int(os.getenv("MAX_JOB_OPTIONS", "2000").strip() or "2000")
+
+
 def get_blob_service_client():
     global BlobServiceClient, ContentSettings
 
@@ -364,7 +376,11 @@ def download_jobs_csv_from_url(url, destination_path):
 def create_db_connection():
     database_url = os.getenv("DATABASE_URL", "").strip()
     if database_url:
-        conn = psycopg2.connect(database_url, cursor_factory=RealDictCursor)
+        conn = psycopg2.connect(
+            database_url,
+            cursor_factory=RealDictCursor,
+            connect_timeout=PG_CONNECT_TIMEOUT,
+        )
     else:
         host = os.getenv("PGHOST", "").strip()
         database = os.getenv("PGDATABASE", "").strip()
@@ -393,6 +409,7 @@ def create_db_connection():
             password=password,
             sslmode=os.getenv("PGSSLMODE", "require").strip(),
             cursor_factory=RealDictCursor,
+            connect_timeout=PG_CONNECT_TIMEOUT,
         )
     conn.autocommit = False
     return conn
@@ -426,6 +443,11 @@ def init_db():
 def ensure_app_initialized():
     global _db_initialized
     if _db_initialized:
+        return
+
+    # In managed environments, schema/bootstrap can be run separately to keep worker startup fast.
+    if not AUTO_DB_BOOTSTRAP:
+        _db_initialized = True
         return
 
     with _db_init_lock:
@@ -1063,7 +1085,9 @@ def list_ticket_jobs(db):
         WHERE active = 1
 
         ORDER BY job_code, job_name
-        """
+        LIMIT %s
+        """,
+        (MAX_JOB_OPTIONS,),
         )
         return cursor.fetchall()
 
@@ -1178,6 +1202,11 @@ def list_materials(db, direction=None):
 @app.route("/")
 def home():
     return redirect(url_for("new_ticket"))
+
+
+@app.get("/healthz")
+def healthz():
+    return "ok", 200
 
 
 @app.route("/tickets/new", methods=["GET", "POST"])
