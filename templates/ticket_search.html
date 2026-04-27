@@ -56,10 +56,17 @@
                 <td>{{ t.material_name_snapshot }}</td>
                 <td>${{ "%.2f"|format(t.cost or 0) }}</td>
                 <td class="actions">
+                    {% if t.has_pdf %}
                     <a href="{{ url_for('ticket_pdf', ticket_id=t.id) }}">PDF</a>
                     <form method="post" action="{{ url_for('print_ticket', ticket_id=t.id) }}" class="inline-form">
                         <button type="submit">Reprint</button>
                     </form>
+                    {% else %}
+                    <span>No PDF</span>
+                    <form method="post" action="{{ url_for('generate_ticket_pdf', ticket_id=t.id) }}" class="inline-form">
+                        <button type="submit">Generate PDF</button>
+                    </form>
+                    {% endif %}
                     <form method="post" action="{{ url_for('void_ticket', ticket_id=t.id) }}" class="inline-form" onsubmit="return confirm('Are you sure you want to void this ticket? This action cannot be undone.');">
                         <button type="submit" class="danger">Void</button>
                     </form>

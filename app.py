@@ -441,6 +441,8 @@ def ensure_db_migrations(conn):
         cursor.execute("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS customer_snapshot TEXT NOT NULL DEFAULT ''")
         cursor.execute("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS tax_exempt TEXT NOT NULL DEFAULT ''")
         cursor.execute("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS cost REAL NOT NULL DEFAULT 0")
+        cursor.execute("ALTER TABLE tickets ALTER COLUMN pdf_path DROP NOT NULL")
+        cursor.execute("ALTER TABLE tickets ALTER COLUMN pdf_blob DROP NOT NULL")
         cursor.execute("ALTER TABLE trucks ADD COLUMN IF NOT EXISTS truck_size TEXT NOT NULL DEFAULT ''")
         cursor.execute("ALTER TABLE trucks ADD COLUMN IF NOT EXISTS hauled_by TEXT NOT NULL DEFAULT ''")
         cursor.execute(
@@ -519,15 +521,13 @@ def truck_size_to_axle_index(truck_size):
 
 
 def calculate_ticket_cost(truck, material, quantity_num):
+    # print(f"Calculating cost for truck: {truck}, material: {material}, quantity: {quantity_num}")
     if not truck or not material:
         return 0.0
-
-    axle_index = truck_size_to_axle_index(truck.get("truck_size"))
-    if not axle_index:
-        return 0.0
-
-    price_key = f"axle{axle_index}"
-    price_per_load = float(material.get(price_key) or 0)
+    track_size_map = { 
+        "Axle 1":"axle_1", "Tandem":"tandem","TriAxle":"triaxle","Axle 4_5":"axle_4_5","Axle 6":"axle_6","Semi":"semi","HydVac":"hydvac","DIRT_IN":"dirt_in"
+    }
+    price_per_load = float(material.get(track_size_map.get(truck.get("truck_size"))) or 0)
     return round(price_per_load * quantity_num, 2)
 
 
@@ -751,7 +751,7 @@ def materials_report_to_pdf_bytes(materials):
 
     table_data = [[
         "Material", "Direction", "Cat",
-        "Axle 1", "Axle 2", "Axle 3", "Axle 4", "Axle 5", "Axle 6", "VAC Truck", "Axle 8", "Axle 9",
+        "Axle 1", "Tandem", "TriAxle", "Axle 4-5", "Axle 6", "Semi", "HydVac", "Dirt In",
         "Status",
     ]]
 
@@ -760,15 +760,14 @@ def materials_report_to_pdf_bytes(materials):
             Paragraph(str(m["material_name"] or ""), normal),
             Paragraph(str(m["direction"] or ""), normal),
             Paragraph(str(m["cat"] or ""), normal),
-            Paragraph(f"{float(m['axle1']):.2f}" if m["axle1"] is not None else "", normal),
-            Paragraph(f"{float(m['axle2']):.2f}" if m["axle2"] is not None else "", normal),
-            Paragraph(f"{float(m['axle3']):.2f}" if m["axle3"] is not None else "", normal),
-            Paragraph(f"{float(m['axle4']):.2f}" if m["axle4"] is not None else "", normal),
-            Paragraph(f"{float(m['axle5']):.2f}" if m["axle5"] is not None else "", normal),
-            Paragraph(f"{float(m['axle6']):.2f}" if m["axle6"] is not None else "", normal),
-            Paragraph(f"{float(m['axle7']):.2f}" if m["axle7"] is not None else "", normal),
-            Paragraph(f"{float(m['axle8']):.2f}" if m["axle8"] is not None else "", normal),
-            Paragraph(f"{float(m['axle9']):.2f}" if m["axle9"] is not None else "", normal),
+            Paragraph(f"{float(m['axle_1']):.2f}" if m["axle_1"] is not None else "", normal),
+            Paragraph(f"{float(m['tandem']):.2f}" if m["tandem"] is not None else "", normal),
+            Paragraph(f"{float(m['triaxle']):.2f}" if m["triaxle"] is not None else "", normal),
+            Paragraph(f"{float(m['axle_4_5']):.2f}" if m["axle_4_5"] is not None else "", normal),
+            Paragraph(f"{float(m['axle_6']):.2f}" if m["axle_6"] is not None else "", normal),
+            Paragraph(f"{float(m['semi']):.2f}" if m["semi"] is not None else "", normal),
+            Paragraph(f"{float(m['hydvac']):.2f}" if m["hydvac"] is not None else "", normal),
+            Paragraph(f"{float(m['dirt_in']):.2f}" if m["dirt_in"] is not None else "", normal),
             Paragraph("Active" if m["active"] else "Inactive", normal),
         ])
 
@@ -1207,6 +1206,7 @@ def new_ticket():
         if not all([job_entry, truck_entry, material_entry, quantity, unit]):
             flash("Job, truck, material, quantity, and unit are required.", "error")
             return redirect(url_for("new_ticket"))
+        # print(f"Received new ticket data: direction={direction}, job_id={job_id}, job_entry={job_entry}, truck_id={truck_id}, truck_entry={truck_entry}, material_id={material_id}, material_entry={material_entry}, customer_id={customer_id}, quantity={quantity}, unit={unit}, notes={notes}, auto_print={auto_print}, use_now={use_now}, custom_datetime={custom_datetime}")
 
         job = None
         truck = None
@@ -1226,7 +1226,7 @@ def new_ticket():
                 cursor.execute(
                     """
                     SELECT id, material AS material_name,
-                           axle1, axle2, axle3, axle4, axle5, axle6, axle7, axle8, axle9
+                           axle_1, tandem, triaxle, axle_4_5, axle_6, semi, hydvac, dirt_in
                     FROM material_price
                     WHERE id = %s
                     """,
@@ -1409,7 +1409,21 @@ def search_tickets():
     date_to = request.args.get("date_to", "").strip()
 
     query = """
-        SELECT id, ticket_number, created_at, direction, job_code_snapshot, tax_exempt, customer_snapshot, truck_number_snapshot, material_name_snapshot, cost
+        SELECT
+            id,
+            ticket_number,
+            created_at,
+            direction,
+            job_code_snapshot,
+            tax_exempt,
+            customer_snapshot,
+            truck_number_snapshot,
+            material_name_snapshot,
+            cost,
+            CASE
+                WHEN pdf_blob IS NOT NULL OR COALESCE(pdf_path, '') <> '' THEN TRUE
+                ELSE FALSE
+            END AS has_pdf
         FROM tickets
         WHERE 1 = 1
     """
@@ -1878,29 +1892,45 @@ def print_reports():
 def ticket_pdf(ticket_id):
     db = get_db()
     with db.cursor() as cursor:
-        cursor.execute("SELECT ticket_number, pdf_blob FROM tickets WHERE id = %s", (ticket_id,))
+        cursor.execute("SELECT ticket_number, pdf_path, pdf_blob FROM tickets WHERE id = %s", (ticket_id,))
         row = cursor.fetchone()
     if not row:
         flash("Ticket not found.", "error")
         return redirect(url_for("search_tickets"))
 
     ticket_filename = f"{row['ticket_number']}.pdf"
-    try:
-        upload_download_audit_blob(
-            category="ticket_pdf",
-            filename=ticket_filename,
-            file_bytes=row["pdf_blob"],
-            mimetype="application/pdf",
-        )
-    except Exception as exc:
-        app.logger.warning("Could not audit-upload ticket PDF download: %s", exc)
+    pdf_blob = row.get("pdf_blob")
+    if pdf_blob is not None:
+        try:
+            upload_download_audit_blob(
+                category="ticket_pdf",
+                filename=ticket_filename,
+                file_bytes=pdf_blob,
+                mimetype="application/pdf",
+            )
+        except Exception as exc:
+            app.logger.warning("Could not audit-upload ticket PDF download: %s", exc)
 
-    return send_file(
-        io.BytesIO(row["pdf_blob"]),
-        mimetype="application/pdf",
-        as_attachment=True,
-        download_name=ticket_filename,
-    )
+        return send_file(
+            io.BytesIO(pdf_blob),
+            mimetype="application/pdf",
+            as_attachment=True,
+            download_name=ticket_filename,
+        )
+
+    pdf_path = str(row.get("pdf_path") or "").strip()
+    if pdf_path and not pdf_path.lower().startswith("http"):
+        path_obj = Path(pdf_path)
+        if path_obj.exists():
+            return send_file(
+                path_obj,
+                mimetype="application/pdf",
+                as_attachment=True,
+                download_name=ticket_filename,
+            )
+
+    flash("No PDF exists for this ticket yet. Use Generate PDF.", "error")
+    return redirect(url_for("search_tickets", ticket_number=row["ticket_number"]))
 
 
 @app.post("/tickets/<int:ticket_id>/print")
@@ -1915,14 +1945,69 @@ def print_ticket(ticket_id):
 
     try:
         pdf_path = (row.get("pdf_path") or "").strip()
-        if pdf_path and not pdf_path.lower().startswith("http"):
+        pdf_blob = row.get("pdf_blob")
+        if pdf_path and not pdf_path.lower().startswith("http") and Path(pdf_path).exists():
             print_pdf_file(pdf_path)
-        else:
-            temp_print_path = write_temp_pdf_for_print(row["pdf_blob"], row["ticket_number"])
+        elif pdf_blob is not None:
+            temp_print_path = write_temp_pdf_for_print(pdf_blob, row["ticket_number"])
             print_pdf_file(temp_print_path)
+        else:
+            flash("No PDF exists for this ticket yet. Use Generate PDF first.", "error")
+            return redirect(url_for("search_tickets", ticket_number=row["ticket_number"]))
         flash(f"Print sent for {row['ticket_number']}.", "success")
     except Exception as exc:
         flash(f"Print failed: {exc}", "error")
+    return redirect(url_for("search_tickets", ticket_number=row["ticket_number"]))
+
+
+@app.post("/tickets/<int:ticket_id>/generate-pdf")
+def generate_ticket_pdf(ticket_id):
+    db = get_db()
+    with db.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT
+                id,
+                ticket_number,
+                created_at,
+                direction,
+                job_code_snapshot,
+                job_name_snapshot,
+                tax_exempt,
+                customer_snapshot,
+                truck_number_snapshot,
+                material_name_snapshot,
+                quantity,
+                unit,
+                cost,
+                notes,
+                pdf_path,
+                pdf_blob
+            FROM tickets
+            WHERE id = %s
+            """,
+            (ticket_id,),
+        )
+        row = cursor.fetchone()
+
+    if not row:
+        flash("Ticket not found.", "error")
+        return redirect(url_for("search_tickets"))
+
+    try:
+        pdf_bytes = to_pdf_bytes(row)
+        pdf_path = save_pdf(row["ticket_number"], pdf_bytes)
+        with db.cursor() as cursor:
+            cursor.execute(
+                "UPDATE tickets SET pdf_path = %s, pdf_blob = %s WHERE id = %s",
+                (pdf_path, pdf_bytes, ticket_id),
+            )
+        db.commit()
+        flash(f"PDF generated for {row['ticket_number']}.", "success")
+    except Exception as exc:
+        db.rollback()
+        flash(f"Could not generate PDF: {exc}", "error")
+
     return redirect(url_for("search_tickets", ticket_number=row["ticket_number"]))
 
 
@@ -2022,7 +2107,7 @@ def admin_materials():
         cursor.execute(
             """
             SELECT id, cat, material AS material_name, direction,
-                   axle1, axle2, axle3, axle4, axle5, axle6, axle7, axle8, axle9, active
+            axle_1, tandem, triaxle, axle_4_5, axle_6, semi, hydvac, dirt_in, active
             FROM material_price
             ORDER BY active DESC, direction, material
             """
@@ -2038,7 +2123,7 @@ def export_materials_pdf():
         cursor.execute(
             """
             SELECT id, cat, material AS material_name, direction,
-                   axle1, axle2, axle3, axle4, axle5, axle6, axle7, axle8, axle9, active
+            axle_1, tandem, triaxle, axle_4_5, axle_6, semi, hydvac, dirt_in, active
             FROM material_price
             ORDER BY active DESC, direction, material
             """
@@ -2074,7 +2159,7 @@ def export_materials_csv():
         cursor.execute(
             """
             SELECT id, cat, material AS material_name, direction,
-                   axle1, axle2, axle3, axle4, axle5, axle6, axle7, axle8, axle9, active
+            axle_1, tandem, triaxle, axle_4_5, axle_6, semi, hydvac, dirt_in, active
             FROM material_price
             ORDER BY id
             """
@@ -2088,15 +2173,14 @@ def export_materials_csv():
         "cat",
         "material_name",
         "direction",
-        "axle1",
-        "axle2",
-        "axle3",
-        "axle4",
-        "axle5",
-        "axle6",
-        "axle7",
-        "axle8",
-        "axle9",
+        "axle_1",
+        "tandem",
+        "triaxle",
+        "axle_4_5",
+        "axle_6",
+        "semi",
+        "hydvac",
+        "dirt_in",
         "active",
     ])
 
@@ -2106,15 +2190,14 @@ def export_materials_csv():
             row["cat"],
             row["material_name"],
             row["direction"],
-            row["axle1"],
-            row["axle2"],
-            row["axle3"],
-            row["axle4"],
-            row["axle5"],
-            row["axle6"],
-            row["axle7"],
-            row["axle8"],
-            row["axle9"],
+            row["axle_1"],
+            row["tandem"],
+            row["triaxle"],
+            row["axle_4_5"],
+            row["axle_6"],
+            row["semi"],
+            row["hydvac"],
+            row["dirt_in"],
             1 if row["active"] else 0,
         ])
 
@@ -2169,15 +2252,14 @@ def import_materials_csv():
         "cat",
         "material_name",
         "direction",
-        "axle1",
-        "axle2",
-        "axle3",
-        "axle4",
-        "axle5",
-        "axle6",
-        "axle7",
-        "axle8",
-        "axle9",
+        "axle_1",
+        "tandem",
+        "triaxle",
+        "axle_4_5",
+        "axle_6",
+        "semi",
+        "hydvac",
+        "dirt_in",
         "active",
     }
 
@@ -2237,15 +2319,14 @@ def import_materials_csv():
                         SET cat = %s,
                             material = %s,
                             direction = %s,
-                            axle1 = %s,
-                            axle2 = %s,
-                            axle3 = %s,
-                            axle4 = %s,
-                            axle5 = %s,
-                            axle6 = %s,
-                            axle7 = %s,
-                            axle8 = %s,
-                            axle9 = %s,
+                            axle_1 = %s,
+                            tandem = %s,
+                            triaxle = %s,
+                            axle_4_5 = %s,
+                            axle_6 = %s,
+                            semi = %s,
+                            hydvac = %s,
+                            dirt_in = %s,
                             active = %s
                         WHERE id = %s
                         """,
@@ -2260,10 +2341,10 @@ def import_materials_csv():
                     """
                     INSERT INTO material_price (
                         cat, material, direction,
-                        axle1, axle2, axle3, axle4, axle5, axle6, axle7, axle8, axle9,
+                        axle_1, tandem, triaxle, axle_4_5, axle_6, semi, hydvac, dirt_in,
                         active
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     values,
                 )

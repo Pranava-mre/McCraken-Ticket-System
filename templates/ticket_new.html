@@ -100,17 +100,21 @@
         const datalist = document.getElementById(datalistId);
         if (!input || !hidden || !datalist) return;
 
-        const optionMap = new Map();
-        for (const option of datalist.options) {
-            optionMap.set(option.value.trim(), {
-                id: option.dataset.id || "",
-                customer: option.dataset.customer || ""
-            });
+        function findSelectedOption() {
+            const wanted = input.value.trim();
+            if (!wanted) return null;
+
+            for (const option of datalist.options) {
+                if ((option.value || "").trim() === wanted) {
+                    return option;
+                }
+            }
+            return null;
         }
 
         function syncHidden() {
-            const selected = optionMap.get(input.value.trim()) || null;
-            const selectedId = selected ? selected.id : "";
+            const selected = findSelectedOption();
+            const selectedId = selected ? (selected.dataset.id || "") : "";
             hidden.value = selectedId;
             input.setCustomValidity("");
 
@@ -166,6 +170,10 @@
             option.dataset.id = m.id;
             materialDatalist.appendChild(option);
         });
+
+        // Avoid keeping a stale material/id pair when the direction changes.
+        document.getElementById("material_search").value = "";
+        document.getElementById("material_id").value = "";
     }
 
     // Initial load

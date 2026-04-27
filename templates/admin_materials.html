@@ -30,14 +30,13 @@
                 <th>Direction</th>
                 <th>Cat</th>
                 <th>Axle 1</th>
-                <th>Axle 2</th>
-                <th>Axle 3</th>
-                <th>Axle 4</th>
-                <th>Axle 5</th>
+                <th>Tandem</th>
+                <th>TriAxle</th>
+                <th>Axle 4/5</th>
                 <th>Axle 6</th>
-                <th>VAC Truck</th>
-                <th>Axle 8</th>
-                <th>Axle 9</th>
+                <th>Semi</th>
+                <th>HydVac</th>
+                <th>DIRT IN</th>
                 <th>Status</th>
             </tr>
         </thead>
@@ -47,19 +46,18 @@
                 <td>{{ m.material_name }}</td>
                 <td>{{ m.direction }}</td>
                 <td>{{ m.cat }}</td>
-                <td>{{ m.axle1 if m.axle1 is not none else '' }}</td>
-                <td>{{ m.axle2 if m.axle2 is not none else '' }}</td>
-                <td>{{ m.axle3 if m.axle3 is not none else '' }}</td>
-                <td>{{ m.axle4 if m.axle4 is not none else '' }}</td>
-                <td>{{ m.axle5 if m.axle5 is not none else '' }}</td>
-                <td>{{ m.axle6 if m.axle6 is not none else '' }}</td>
-                <td>{{ m.axle7 if m.axle7 is not none else '' }}</td>
-                <td>{{ m.axle8 if m.axle8 is not none else '' }}</td>
-                <td>{{ m.axle9 if m.axle9 is not none else '' }}</td>
+                <td>{{ m.axle_1 if m.axle_1 is not none else '' }}</td>
+                <td>{{ m.tandem if m.tandem is not none else '' }}</td>
+                <td>{{ m.triaxle if m.triaxle is not none else '' }}</td>
+                <td>{{ m.axle_4_5 if m.axle_4_5 is not none else '' }}</td>
+                <td>{{ m.axle_6 if m.axle_6 is not none else '' }}</td>
+                <td>{{ m.semi if m.semi is not none else '' }}</td>
+                <td>{{ m.hydvac if m.hydvac is not none else '' }}</td>
+                <td>{{ m.dirt_in if m.dirt_in is not none else '' }}</td>
                 <td>{{ "Active" if m.active else "Inactive" }}</td>
             </tr>
             {% else %}
-            <tr><td colspan="13">No materials found.</td></tr>
+            <tr><td colspan="12">No materials found.</td></tr>
             {% endfor %}
         </tbody>
     </table>

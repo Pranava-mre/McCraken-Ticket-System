@@ -97,8 +97,8 @@ CREATE TABLE IF NOT EXISTS tickets (
     unit TEXT NOT NULL,
     cost REAL NOT NULL DEFAULT 0,
     notes TEXT,
-    pdf_path TEXT NOT NULL,
-    pdf_blob BYTEA NOT NULL,
+    pdf_path TEXT,
+    pdf_blob BYTEA,
     FOREIGN KEY(job_id) REFERENCES jobs_cache(id),
     FOREIGN KEY(truck_id) REFERENCES trucks_main(id),
     FOREIGN KEY(material_id) REFERENCES material_price(id)
