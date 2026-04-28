@@ -1021,7 +1021,7 @@ def materials_report_to_pdf_bytes(materials):
     elements.append(Spacer(1, 12))
 
     table_data = [[
-        "Material", "Direction", "Cat",
+        "Material", "Direction", "Price per Cubic Yard",
         "Axle 1", "Tandem", "TriAxle", "Axle 4-5", "Axle 6", "Semi", "HydVac", "Dirt In",
         "Status",
     ]]
@@ -1030,7 +1030,7 @@ def materials_report_to_pdf_bytes(materials):
         table_data.append([
             Paragraph(str(m["material_name"] or ""), normal),
             Paragraph(str(m["direction"] or ""), normal),
-            Paragraph(str(m["cat"] or ""), normal),
+            Paragraph(f"${float(m['cost_per_cy']):.2f}" if m["cost_per_cy"] is not None else "", normal),
             Paragraph(f"{float(m['axle_1']):.2f}" if m["axle_1"] is not None else "", normal),
             Paragraph(f"{float(m['tandem']):.2f}" if m["tandem"] is not None else "", normal),
             Paragraph(f"{float(m['triaxle']):.2f}" if m["triaxle"] is not None else "", normal),
@@ -1044,7 +1044,7 @@ def materials_report_to_pdf_bytes(materials):
 
     table = Table(
         table_data,
-        colWidths=[90, 45, 30, 38, 38, 38, 38, 38, 38, 45, 38, 38, 45],
+        colWidths=[90, 45, 50, 38, 38, 38, 38, 38, 38, 45, 38, 38, 45],
         repeatRows=1,
     )
     table.setStyle(TableStyle([
@@ -2384,7 +2384,7 @@ def admin_materials():
     with db.cursor() as cursor:
         cursor.execute(
             """
-            SELECT id, cat, material AS material_name, direction,
+            SELECT id, cat, material AS material_name, cost_per_cy, direction,
             axle_1, tandem, triaxle, axle_4_5, axle_6, semi, hydvac, dirt_in, active
             FROM material_price
             ORDER BY active DESC, direction, material
@@ -2400,7 +2400,7 @@ def export_materials_pdf():
     with db.cursor() as cursor:
         cursor.execute(
             """
-            SELECT id, cat, material AS material_name, direction,
+            SELECT id, cat, material AS material_name, cost_per_cy, direction,
             axle_1, tandem, triaxle, axle_4_5, axle_6, semi, hydvac, dirt_in, active
             FROM material_price
             ORDER BY active DESC, direction, material
@@ -2436,7 +2436,7 @@ def export_materials_csv():
     with db.cursor() as cursor:
         cursor.execute(
             """
-            SELECT id, cat, material AS material_name, direction,
+            SELECT id, cat, material AS material_name, cost_per_cy, direction,
             axle_1, tandem, triaxle, axle_4_5, axle_6, semi, hydvac, dirt_in, active
             FROM material_price
             ORDER BY id
@@ -2450,6 +2450,7 @@ def export_materials_csv():
         "id",
         "cat",
         "material_name",
+        "cost_per_cy",
         "direction",
         "axle_1",
         "tandem",
@@ -2467,6 +2468,7 @@ def export_materials_csv():
             row["id"],
             row["cat"],
             row["material_name"],
+            row["cost_per_cy"],
             row["direction"],
             row["axle_1"],
             row["tandem"],
@@ -2529,6 +2531,7 @@ def import_materials_csv():
         "id",
         "cat",
         "material_name",
+        "cost_per_cy",
         "direction",
         "axle_1",
         "tandem",
@@ -2540,6 +2543,16 @@ def import_materials_csv():
         "dirt_in",
         "active",
     }
+    axle_keys = [
+    "axle_1",
+    "tandem",
+    "triaxle",
+    "axle_4_5",
+    "axle_6",
+    "semi",
+    "hydvac",
+    "dirt_in",
+    ]
 
     sample_columns = {str(k).strip().lower() for k in raw_rows[0][1].keys()}
     missing = sorted(required_columns - sample_columns)
@@ -2557,6 +2570,7 @@ def import_materials_csv():
             material_id = int(raw_id) if raw_id else None
             cat = int(str(row_map.get("cat") or "").strip())
             material_name = str(row_map.get("material_name") or "").strip()
+            cost_per_cy = float(str(row_map.get("cost_per_cy") or "").strip())
             direction = str(row_map.get("direction") or "").strip().upper()
             if not material_name:
                 raise ValueError("material_name is required")
@@ -2564,9 +2578,9 @@ def import_materials_csv():
                 raise ValueError("direction must be IN or OUT")
 
             axle_values = []
-            for idx in range(1, 10):
-                axle_raw = str(row_map.get(f"axle{idx}") or "").strip()
-                axle_values.append(None if axle_raw == "" else float(axle_raw))
+            for key in axle_keys:
+                val = str(row_map.get(key) or "").strip()
+                axle_values.append(None if val == "" else float(val))
 
             active_value = parse_material_active_value(row_map.get("active"), use_boolean_active)
 
@@ -2575,6 +2589,7 @@ def import_materials_csv():
                 cat,
                 material_name,
                 direction,
+                cost_per_cy,
                 *axle_values,
                 active_value,
             ))
@@ -2597,6 +2612,7 @@ def import_materials_csv():
                         SET cat = %s,
                             material = %s,
                             direction = %s,
+                            cost_per_cy = %s,
                             axle_1 = %s,
                             tandem = %s,
                             triaxle = %s,
@@ -2618,11 +2634,11 @@ def import_materials_csv():
                 cursor.execute(
                     """
                     INSERT INTO material_price (
-                        cat, material, direction,
+                        cat, material, cost_per_cy, direction,
                         axle_1, tandem, triaxle, axle_4_5, axle_6, semi, hydvac, dirt_in,
                         active
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     values,
                 )

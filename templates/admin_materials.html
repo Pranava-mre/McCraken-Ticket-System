@@ -28,7 +28,7 @@
             <tr>
                 <th>Material</th>
                 <th>Direction</th>
-                <th>Cat</th>
+                <th>Price per Cubic Yard</th>
                 <th>Axle 1</th>
                 <th>Tandem</th>
                 <th>TriAxle</th>
@@ -45,7 +45,7 @@
             <tr>
                 <td>{{ m.material_name }}</td>
                 <td>{{ m.direction }}</td>
-                <td>{{ m.cat }}</td>
+                <td>{{ m.cost_per_cy }}</td>
                 <td>{{ m.axle_1 if m.axle_1 is not none else '' }}</td>
                 <td>{{ m.tandem if m.tandem is not none else '' }}</td>
                 <td>{{ m.triaxle if m.triaxle is not none else '' }}</td>
