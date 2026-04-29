@@ -21,6 +21,9 @@
             <a href="{{ url_for('admin_customers') }}">Customers</a>
             <a href="{{ url_for('admin_trucks') }}">Trucks</a>
             <a href="{{ url_for('admin_materials') }}">Materials</a>
+            <form method="post" action="{{ url_for('logout') }}" style="display:inline;margin-left:12px;">
+                <button type="submit" style="cursor:pointer;">Logout</button>
+            </form>
         </nav>
     </header>
     <main class="container">

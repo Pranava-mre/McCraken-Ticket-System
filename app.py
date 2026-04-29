@@ -22,6 +22,7 @@ from flask import (
     render_template,
     request,
     send_file,
+    session,
     url_for,
 )
 from reportlab.lib.pagesizes import letter
@@ -59,6 +60,10 @@ REPORT_PDF_DIR = resolve_storage_dir("REPORT_PDF_DIR", "reports_pdf")
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "local-dev-secret-key")
+app.permanent_session_lifetime = timedelta(hours=8)
+
+APP_USERNAME = os.getenv("APP_USERNAME", "").strip()
+APP_PASSWORD = os.getenv("APP_PASSWORD", "").strip()
 
 _db_init_lock = threading.Lock()
 _db_initialized = False
@@ -1447,6 +1452,45 @@ def list_materials(db, direction=None):
                 "SELECT id, material AS material_name, active, direction FROM material_price WHERE active = TRUE ORDER BY material_name"
             )
         return cursor.fetchall()
+
+@app.before_request
+def require_login():
+    open_endpoints = {"login", "logout", "static", "healthz"}
+    if request.endpoint in open_endpoints:
+        return
+    if not session.get("logged_in"):
+        return redirect(url_for("login", next=request.url))
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if session.get("logged_in"):
+        return redirect(url_for("new_ticket"))
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "").strip()
+        if (
+            APP_USERNAME
+            and APP_PASSWORD
+            and hmac.compare_digest(username, APP_USERNAME)
+            and hmac.compare_digest(password, APP_PASSWORD)
+        ):
+            session["logged_in"] = True
+            session.permanent = True
+            next_url = request.args.get("next") or url_for("new_ticket")
+            parsed_next = urlparse(next_url)
+            if parsed_next.netloc:
+                next_url = url_for("new_ticket")
+            return redirect(next_url)
+        flash("Invalid username or password.", "error")
+    return render_template("login.html")
+
+
+@app.post("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
 
 @app.route("/")
 def home():

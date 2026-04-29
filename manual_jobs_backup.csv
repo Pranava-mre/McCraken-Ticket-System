@@ -1,0 +1,47 @@
+id,job_code,job_name,customer,tax_exempt,active,created_at
+1,wendys job,wendys job,,New,1,2026-04-10T10:15:56
+2,new job 54,new job 54,,New,1,2026-04-10T10:20:21
+36,Parkview Dr.,Parkview Dr.,"Middleton Mechanical, LLC",N,1,2026-01-02T09:58:00
+37,RTA,RTA,Mike Coates Construction Co.,N,1,2026-01-05T08:19:00
+38,Bayberry Rd. - Northfield,Bayberry Rd. - Northfield,Don Wartko Construction,N,1,2026-01-05T09:13:00
+39,Lee Rd.,Lee Rd.,Utilities Construction Co.,N,1,2026-01-05T10:01:00
+40,5136 N. Ridge Rd.,5136 N. Ridge Rd.,Du-All Services,N,1,2026-01-06T10:29:00
+41,Bedford - Solon Rd.,Bedford - Solon Rd.,Shook Construction Co. ,N,1,2026-01-07T08:20:00
+42,Credit- CMG Contracting- Meadow Park,Credit- CMG Contracting- Meadow Park,Credit Card Sales,N,1,2026-01-07T09:43:00
+43,Credit - Badger - Parma,Credit - Badger - Parma,Credit Card Sales,N,1,2026-01-07T12:48:00
+44,Wamelink Ave. - Woodhill Station,Wamelink Ave. - Woodhill Station,"North Coast Concrete, Inc.",N,1,2026-01-09T08:11:00
+45,Bayberry Rd.-Northfield,Bayberry Rd.-Northfield,Don Wartko Construction,N,1,2026-01-12T09:36:00
+46,JCU,JCU,North Coast Paving,N,1,2026-01-12T11:06:00
+47,Shaker Hts.,Shaker Hts.,Don Wartko Construction,N,1,2026-01-13T11:01:00
+48,Madison Ave - Lakewood,Madison Ave - Lakewood,Don Wartko Construction,N,1,2026-01-13T12:42:00
+49,93rd & Wamelink Ave. - Woodhill Station,93rd & Wamelink Ave. - Woodhill Station,"North Coast Concrete, Inc.",N,1,2026-01-14T10:11:00
+50,Job #3853 Edgepark,Job #3853 Edgepark,"Middleton Mechanical, LLC",N,1,2026-01-14T10:43:00
+51,Bedford Hts.,Bedford Hts.,Shook Construction Co. ,N,1,2026-01-20T09:07:00
+52,Edgepark Dr.,Edgepark Dr.,"Middleton Mechanical, LLC",N,1,2026-01-21T11:11:00
+53,Brecksville Rd.,Brecksville Rd.,Don Wartko Construction,N,1,2026-01-21T13:27:00
+54,Parkview Dr. - Job #4058,Parkview Dr. - Job #4058,"Middleton Mechanical, LLC",N,1,2026-02-02T09:29:00
+55,Job #3853,Job #3853,"Middleton Mechanical, LLC",N,1,2026-02-02T10:13:00
+56,Credit - Dozer Enterprise - Pavlowski,Credit - Dozer Enterprise - Pavlowski,Credit Card Sales,N,1,2026-02-03T12:54:00
+57,Credit - O.M. Construction,Credit - O.M. Construction,Credit Card Sales,N,1,2026-02-12T10:32:00
+58,Repairs for Others 2026 (2761) - Panzica,Repairs for Others 2026 (2761) - Panzica,MREX,N,1,2026-02-16T11:38:00
+59,Madison Ave. - Lakewood,Madison Ave. - Lakewood,Don Wartko Construction,N,1,2026-02-16T13:44:00
+60,Harvard/Denison Area,Harvard/Denison Area,"Marra Services, Inc.",N,1,2026-02-19T10:29:00
+61,Broadview Hts.,Broadview Hts.,Don Wartko Construction,N,1,2026-02-20T13:28:00
+62,Bedford,Bedford,Shook Construction Co. ,N,1,2026-02-23T08:01:00
+63,Credit - Mayes & Sons,Credit - Mayes & Sons,Credit Card Sales,N,1,2026-02-23T10:09:00
+64,Northfield,Northfield,Don Wartko Construction,N,1,2026-02-24T10:03:00
+65,E.55th Marina Project,E.55th Marina Project,"North Coast Concrete, Inc.",N,1,2026-02-25T11:59:00
+66,Brecksville,Brecksville,Don Wartko Construction,N,1,2026-03-02T13:59:00
+68,Becksville,Becksville,Don Wartko Construction,N,1,2026-03-03T09:47:00
+69,VA Hospital - 331 W.73rd St.,VA Hospital - 331 W.73rd St.,"North Coast Concrete, Inc.",N,1,2026-03-06T08:09:00
+70,VA Hospital - 3311 W.73rd St.,VA Hospital - 3311 W.73rd St.,"North Coast Concrete, Inc.",N,1,2026-03-09T08:14:00
+71,Day Dr. - Parma,Day Dr. - Parma,"North Coast Concrete, Inc.",N,1,2026-03-09T08:25:00
+72,Yard - Woodhill,Yard - Woodhill,North Coast Paving,N,1,2026-03-09T13:10:00
+73,93rd & Buckeye,93rd & Buckeye,"North Coast Concrete, Inc.",N,1,2026-03-11T13:03:00
+74,Credit-Fields Corners Construction,Credit-Fields Corners Construction,Credit Card Sales,N,1,2026-03-12T09:11:00
+75,Wallings Rd.,Wallings Rd.,Don Wartko Construction,N,1,2026-03-19T11:55:00
+76,St. John Woods,St. John Woods,Don Wartko Construction,N,1,2026-03-20T12:18:00
+77,Credit-MS Cement,Credit-MS Cement,Credit Card Sales,N,1,2026-03-24T09:43:00
+78,Job #2261850003,Job #2261850003,InfraSource Construction LLC.,N,1,2026-03-30T09:58:00
+79,Credit-Ready Rock Concrete,Credit-Ready Rock Concrete,Credit Card Sales,N,1,2026-03-30T11:47:00
+80,3853 Job #,3853 Job #,"Middleton Mechanical, LLC",N,1,2026-03-31T12:31:00
