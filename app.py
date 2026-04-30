@@ -573,115 +573,13 @@ def calculate_ticket_cost(truck, material, quantity_num):
     if not truck or not material:
         return 0.0
     track_size_map = { 
-        "Axle 1":"axle_1", "Tandem":"tandem","TriAxle":"triaxle","Axle 4_5":"axle_4_5","Axle 6":"axle_6","Semi":"semi","HydVac":"hydvac","DIRT_IN":"dirt_in"
+        "Axle 1":"axle_1", "Tandem":"tandem","TriAxle":"triaxle","Axle 4_5":"axle_4_5","Axle 6":"axle_6","Semi":"semi","HydVac":"hydvac","Hydrovac":"hydvac","DIRT_IN":"dirt_in"
     }
     price_per_load = float(material.get(track_size_map.get(truck.get("truck_size"))) or 0)
     return round(price_per_load * quantity_num, 2)
 
 
-# def to_pdf_bytes(ticket):
-    buffer = io.BytesIO()
-    pdf = canvas.Canvas(buffer, pagesize=letter)
-    width, height = letter
-    company_header_raw = os.getenv("COMPANY_HEADER", "").strip()
-    if company_header_raw:
-        company_header_lines = [line.strip() for line in company_header_raw.split("|") if line.strip()]
-    else:
-        company_header_lines = [
-            "McCracken Materials, LLC",
-            "13675 McCracken Road",
-            "Garfield Heights, Ohio 44125",
-            "Phone: (216) 206-2600",
-        ]
 
-    def draw_field(label, value, x, y, w, h, label_width=70):
-        pdf.rect(x, y - h, w, h)
-        pdf.setFont("Helvetica-Bold", 10)
-        pdf.drawString(x + 6, y - 14, label)
-        pdf.line(x + label_width, y - h, x + label_width, y)
-        pdf.setFont("Helvetica", 10)
-        pdf.drawString(x + label_width + 6, y - 14, value or "")
-
-    def draw_ticket_page(copy_title, include_signature_line):
-        left = 36
-        right = width - 36
-        box_w = right - left
-        y_top = height - 132
-
-        pdf.setLineWidth(1)
-        pdf.rect(left, 30, box_w, height - 70)
-
-        company_start_y = height - 56
-        for index, line in enumerate(company_header_lines):
-            if index == 0:
-                pdf.setFont("Helvetica-Bold", 12)
-            else:
-                pdf.setFont("Helvetica", 10)
-            pdf.drawCentredString(width / 2, company_start_y - (index * 14), line)
-
-        pdf.setFont("Helvetica-Bold", 18)
-        pdf.drawCentredString(width / 2, y_top, "DUMP TICKET")
-        pdf.setFont("Helvetica-Bold", 11)
-        pdf.drawCentredString(width / 2, y_top - 18, copy_title.upper())
-
-        draw_field("Ticket #", ticket["ticket_number"], left + 10, y_top - 32, 250, 24, label_width=65)
-        draw_field(
-            "Date/Time",
-            format_ticket_datetime(ticket["created_at"]),
-            left + 270,
-            y_top - 32,
-            box_w - 280,
-            24,
-            label_width=72,
-        )
-
-        direction_text = "IN  [X]   OUT [ ]" if ticket["direction"] == "IN" else "IN  [ ]   OUT [X]"
-        draw_field("Direction", direction_text, left + 10, y_top - 62, box_w - 20, 24, label_width=72)
-
-        draw_field("Job #", ticket["job_code_snapshot"], left + 10, y_top - 92, 180, 24, label_width=45)
-        draw_field("Job Name", ticket["job_name_snapshot"], left + 195, y_top - 92, box_w - 205, 24, label_width=65)
-        draw_field("Customer", ticket.get("customer_snapshot", ""), left + 10, y_top - 122, box_w - 20, 24, label_width=65)
-
-        draw_field("Truck #", ticket["truck_number_snapshot"], left + 10, y_top - 152, 180, 24, label_width=55)
-        draw_field("Material", ticket["material_name_snapshot"], left + 195, y_top - 152, box_w - 205, 24, label_width=55)
-
-        draw_field("Quantity", f"{ticket['quantity']}", left + 10, y_top - 182, 180, 24, label_width=58)
-        draw_field("Unit", ticket["unit"], left + 195, y_top - 182, 120, 24, label_width=34)
-        draw_field("Cost", f"${float(ticket.get('cost', 0) or 0):.2f}", left + 320, y_top - 182, box_w - 330, 24, label_width=34)
-
-        notes_y = y_top - 212
-        notes_h = 88
-        pdf.rect(left + 10, notes_y - notes_h, box_w - 20, notes_h)
-        pdf.setFont("Helvetica-Bold", 10)
-        pdf.drawString(left + 16, notes_y - 14, "Notes")
-        pdf.setFont("Helvetica", 10)
-        note_text = ticket.get("notes", "") or ""
-        if len(note_text) > 200:
-            note_text = note_text[:197] + "..."
-        pdf.drawString(left + 70, notes_y - 14, note_text)
-
-        if include_signature_line:
-            sig_y = notes_y - notes_h - 36
-            draw_field("Driver Name", "", left + 10, sig_y, (box_w - 30) / 2, 24, label_width=70)
-            draw_field(
-                "Signature",
-                "",
-                left + 20 + (box_w - 30) / 2,
-                sig_y,
-                (box_w - 30) / 2,
-                24,
-                label_width=60,
-            )
-
-        pdf.setFont("Helvetica", 8)
-        pdf.drawRightString(right - 8, 38, f"Printed: {format_ticket_datetime(app_now())}")
-        pdf.showPage()
-
-    draw_ticket_page("Driver Copy - Signature Required", True)
-    draw_ticket_page("Internal Billing Copy", False)
-    pdf.save()
-    buffer.seek(0)
-    return buffer.read()
 
 def to_pdf_bytes(ticket):
     buffer = io.BytesIO()
@@ -728,9 +626,10 @@ def to_pdf_bytes(ticket):
             pdf.drawCentredString(width / 2, company_start_y - (index * 10), line)
 
         y_top = section_top - 72
+        ticket_type ="DUMP TICKET" if ticket["direction"] == "IN" else "MATERIAL TICKET"
 
         pdf.setFont("Helvetica-Bold", 13)
-        pdf.drawCentredString(width / 2, y_top, "DUMP TICKET")
+        pdf.drawCentredString(width / 2, y_top, ticket_type)
 
         pdf.setFont("Helvetica-Bold", 8)
         pdf.drawCentredString(width / 2, y_top - 14, copy_title.upper())
