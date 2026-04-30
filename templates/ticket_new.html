@@ -93,6 +93,42 @@
     </form>
 </section>
 
+<section class="card">
+    <h3>Latest 5 Tickets</h3>
+    {% if recent_tickets %}
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Ticket #</th>
+                    <th>Date/Time</th>
+                    <th>Dir</th>
+                    <th>Customer</th>
+                    <th>Truck</th>
+                    <th>Material</th>
+                    <th>Qty</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for t in recent_tickets %}
+                <tr>
+                    <td>{{ t.ticket_number }}</td>
+                    <td>{{ t.created_at|ticket_datetime }}</td>
+                    <td>{{ t.direction }}</td>
+                    <td>{{ t.customer_snapshot or '' }}</td>
+                    <td>{{ t.truck_number_snapshot }}</td>
+                    <td>{{ t.material_name_snapshot }}</td>
+                    <td>{{ '%.2f'|format(t.quantity) }} {{ t.unit }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p>No tickets yet.</p>
+    {% endif %}
+</section>
+
 <script>
     function bindSearchSelect(inputId, hiddenId, datalistId, fieldLabel) {
         const input = document.getElementById(inputId);
@@ -187,6 +223,17 @@
     const newTicketForm = document.getElementById("new_ticket_form");
     const autoPrintCheckbox = document.getElementById("auto_print");
 
+    function resetNewTicketForm() {
+        newTicketForm.reset();
+        document.getElementById("job_id").value = "";
+        document.getElementById("customer_id").value = "";
+        document.getElementById("truck_id").value = "";
+        document.getElementById("material_id").value = "";
+        toggleDateInput();
+        loadMaterials(directionSelect.value || "IN");
+        newTicketForm.target = "_self";
+    }
+
     if (newTicketForm && autoPrintCheckbox) {
         newTicketForm.addEventListener("submit", () => {
             if (autoPrintCheckbox.checked) {
@@ -197,6 +244,9 @@
             } else {
                 newTicketForm.target = "_self";
             }
+
+            // Clear fields on the source page after submit starts.
+            setTimeout(resetNewTicketForm, 0);
         });
     }
 

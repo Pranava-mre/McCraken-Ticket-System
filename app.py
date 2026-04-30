@@ -1266,6 +1266,29 @@ def list_ticket_jobs(db):
         return cursor.fetchall()
 
 
+def list_recent_tickets(db, limit=5):
+    with db.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT
+                id,
+                ticket_number,
+                created_at,
+                direction,
+                customer_snapshot,
+                truck_number_snapshot,
+                material_name_snapshot,
+                quantity,
+                unit
+            FROM tickets
+            ORDER BY id DESC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        return cursor.fetchall()
+
+
 def split_job_entry(job_entry):
     if " - " in job_entry:
         job_code, job_name = [part.strip() for part in job_entry.split(" - ", 1)]
@@ -1615,6 +1638,7 @@ def new_ticket():
         customers =list_customers(db),
         trucks=list_trucks(db),
         materials=list_materials(db,direction=direction),
+        recent_tickets=list_recent_tickets(db, limit=5),
     )
 
 @app.get("/materials")
