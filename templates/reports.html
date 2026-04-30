@@ -113,6 +113,34 @@
 </section>
 
 <section class="card">
+    <h3>Total Quantity by Direction</h3>
+    {% if totals_by_direction %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Direction</th>
+                    <th>Unit</th>
+                    <th>Total Quantity</th>
+                    <th>Total Cost</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for total in totals_by_direction %}
+                    <tr>
+                        <td>{{ total.direction }}</td>
+                        <td>{{ total.unit }}</td>
+                        <td>{{ "%.2f"|format(total.total_quantity) }}</td>
+                        <td>${{ "%.2f"|format(total.total_cost or 0) }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p>No matching tickets.</p>
+    {% endif %}
+</section>
+
+<section class="card">
     <h3>Matching Tickets</h3>
     {% if tickets %}
         <table>

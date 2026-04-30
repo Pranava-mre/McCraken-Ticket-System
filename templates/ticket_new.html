@@ -3,20 +3,30 @@
 <section class="card">
     <h2>Create Ticket</h2>
     <form method="post" class="form-grid" id="new_ticket_form">
+        <label>Truck
+            <a class="field-link" href="{{ url_for('admin_trucks') }}">Add or manage trucks</a>
+            <input type="text" id="truck_search" name="truck_entry" list="trucks_list" placeholder="Select Truck Number" autocomplete="off" required>
+            <input type="hidden" name="truck_id" id="truck_id">
+            <datalist id="trucks_list">
+                {% for truck in trucks %}
+                    <option value="{{ truck.truck_number }}" data-id="{{ truck.id }}"></option>
+                {% endfor %}
+            </datalist>
+        </label>
+
         <label>Direction
             <select name="direction" required>
                 <option value="IN">IN</option>
                 <option value="OUT">OUT</option>
             </select>
         </label>
-
-        <label>Job
-            <input type="text" id="job_search" name="job_entry" list="jobs_list" placeholder="Type or enter new job" autocomplete="off" required>
-            <input type="hidden" name="job_id" id="job_id">
-            <datalist id="jobs_list">
-                {% for job in jobs %}
-                    <!-- <option value="{{ job.job_code }} - {{ job.job_name }}" data-id="{{ job.id }}" data-customer="{{ job.customer or '' }}"></option> -->
-                     <option value="{{ job.job_code }} - {{ job.job_name }}" data-id="{{ job.job_key }}"></option>
+        
+        <label>Material
+            <input type="text" id="material_search" name="material_entry" list="materials_list" placeholder="Select Material" autocomplete="off" required>
+            <input type="hidden" name="material_id" id="material_id">
+            <datalist id="materials_list">
+                {% for material in materials %}
+                    <option value="{{ material.material_name }}" data-id="{{ material.id }}"></option>
                 {% endfor %}
             </datalist>
         </label>
@@ -32,26 +42,20 @@
             </datalist>
         </label>
 
-        <label>Truck
-            <a class="field-link" href="{{ url_for('admin_trucks') }}">Add or manage trucks</a>
-            <input type="text" id="truck_search" name="truck_entry" list="trucks_list" placeholder="Select Truck Number" autocomplete="off" required>
-            <input type="hidden" name="truck_id" id="truck_id">
-            <datalist id="trucks_list">
-                {% for truck in trucks %}
-                    <option value="{{ truck.truck_number }}" data-id="{{ truck.id }}"></option>
+        <label>Job
+            <input type="text" id="job_search" name="job_entry" list="jobs_list" placeholder="Type or enter new job" autocomplete="off" required>
+            <input type="hidden" name="job_id" id="job_id">
+            <datalist id="jobs_list">
+                {% for job in jobs %}
+                    <!-- <option value="{{ job.job_code }} - {{ job.job_name }}" data-id="{{ job.id }}" data-customer="{{ job.customer or '' }}"></option> -->
+                     <option value="{{ job.job_code }} - {{ job.job_name }}" data-id="{{ job.job_key }}"></option>
                 {% endfor %}
             </datalist>
         </label>
 
-        <label>Material
-            <input type="text" id="material_search" name="material_entry" list="materials_list" placeholder="Select Material" autocomplete="off" required>
-            <input type="hidden" name="material_id" id="material_id">
-            <datalist id="materials_list">
-                {% for material in materials %}
-                    <option value="{{ material.material_name }}" data-id="{{ material.id }}"></option>
-                {% endfor %}
-            </datalist>
-        </label>
+
+
+
 
         <label>Quantity
             <input type="number" name="quantity" value="1" required>

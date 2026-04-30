@@ -1823,12 +1823,29 @@ def reports():
         )
         totals_by_material = cursor.fetchall()
 
+    with db.cursor() as cursor:
+        cursor.execute(
+        f"""
+         SELECT t.direction,
+             t.unit,
+             COALESCE(SUM(t.quantity), 0) AS total_quantity,
+             COALESCE(SUM(t.cost), 0) AS total_cost
+        FROM tickets t
+        WHERE {where_sql}
+        GROUP BY t.direction, t.unit
+        ORDER BY t.direction, t.unit
+        """,
+        tuple(params),
+        )
+        totals_by_direction = cursor.fetchall()
+
     return render_template(
         "reports.html",
         tickets=tickets,
         offset=offset,
         totals_by_unit=totals_by_unit,
         totals_by_material=totals_by_material,
+        totals_by_direction=totals_by_direction,
         jobs=list_jobs(db),
         materials=list_materials(db,direction=direction),
         filters={
