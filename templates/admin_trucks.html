@@ -35,6 +35,21 @@
 </section>
 
 <section class="card">
+    <form method="get" class="form-grid" style="margin-bottom: 12px;">
+        <label class="full">Search Trucks
+            <input
+                type="text"
+                name="q"
+                value="{{ truck_query or '' }}"
+                placeholder="Truck number, truck size, hauled by, or license plate"
+            >
+        </label>
+        <div class="actions full">
+            <button type="submit">Search</button>
+            <a href="{{ url_for('admin_trucks') }}">Clear</a>
+        </div>
+    </form>
+
     <table>
         <thead>
             <tr>

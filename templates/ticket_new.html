@@ -22,13 +22,13 @@
         </label>
         
         <label>Material
-            <input type="text" id="material_search" name="material_entry" list="materials_list" placeholder="Select Material" autocomplete="off" required>
-            <input type="hidden" name="material_id" id="material_id">
-            <datalist id="materials_list">
+            <select id="material_search" name="material_entry" required>
+                <option value="" disabled selected>Select Material</option>
                 {% for material in materials %}
-                    <option value="{{ material.material_name }}" data-id="{{ material.id }}"></option>
+                    <option value="{{ material.material_name }}" data-id="{{ material.id }}">{{ material.material_name }}</option>
                 {% endfor %}
-            </datalist>
+            </select>
+            <input type="hidden" name="material_id" id="material_id">
         </label>
 
         <label>Customer
@@ -173,7 +173,6 @@
     bindSearchSelect("job_search", "job_id", "jobs_list", "job");
     bindSearchSelect("customer_search", "customer_id", "customers_list", "customer");
     bindSearchSelect("truck_search", "truck_id", "trucks_list", "truck");
-    bindSearchSelect("material_search", "material_id", "materials_list", "material");
 
 
     const useNowCheckbox = document.getElementById("use_now");
@@ -194,26 +193,46 @@
     toggleDateInput();
 
     const directionSelect = document.querySelector('select[name="direction"]');
-    const materialDatalist = document.getElementById("materials_list");
+    const materialSelect = document.getElementById("material_search");
+    const materialIdInput = document.getElementById("material_id");
+
+    function syncMaterialId() {
+        if (!materialSelect || !materialIdInput) return;
+        const selected = materialSelect.options[materialSelect.selectedIndex];
+        materialIdInput.value = selected ? (selected.dataset.id || "") : "";
+    }
+
+    if (materialSelect) {
+        materialSelect.addEventListener("change", syncMaterialId);
+    }
 
     async function loadMaterials(direction) {
         const res = await fetch(`/materials?direction=${direction}`);
         const data = await res.json();
 
+        if (!materialSelect) return;
+
         // Clear existing options
-        materialDatalist.innerHTML = "";
+        materialSelect.innerHTML = "";
+
+        const placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = "Select Material";
+        placeholder.disabled = true;
+        placeholder.selected = true;
+        materialSelect.appendChild(placeholder);
 
         // Add new options
         data.materials.forEach(m => {
             const option = document.createElement("option");
             option.value = m.name;
             option.dataset.id = m.id;
-            materialDatalist.appendChild(option);
+            option.textContent = m.name;
+            materialSelect.appendChild(option);
         });
 
         // Avoid keeping a stale material/id pair when the direction changes.
-        document.getElementById("material_search").value = "";
-        document.getElementById("material_id").value = "";
+        materialIdInput.value = "";
     }
 
     // Initial load

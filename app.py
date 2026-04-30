@@ -746,16 +746,16 @@ def to_pdf_bytes(ticket):
             font_size=8
         )
 
-        draw_field(
-            "Cost",
-            f"${float(ticket.get('cost', 0) or 0):.2f}",
-            left + 320,
-            y_top - 136,
-            box_w - 330,
-            18,
-            label_width=34,
-            font_size=8
-        )
+        # draw_field(
+        #     "Cost",
+        #     f"${float(ticket.get('cost', 0) or 0):.2f}",
+        #     left + 320,
+        #     y_top - 136,
+        #     box_w - 330,
+        #     18,
+        #     label_width=34,
+        #     font_size=8
+        # )
 
         notes_y = y_top - 158
         notes_h = 42
@@ -1471,6 +1471,9 @@ def new_ticket():
             return redirect(url_for("new_ticket"))
         if not all([job_entry, truck_entry, material_entry, quantity, unit]):
             flash("Job, truck, material, quantity, and unit are required.", "error")
+            return redirect(url_for("new_ticket"))
+        if not all([job_id, truck_id, material_id, customer_id]):
+            flash("Please select job, customer, truck, and material from dropdown lists.", "error")
             return redirect(url_for("new_ticket"))
         # print(f"Received new ticket data: direction={direction}, job_id={job_id}, job_entry={job_entry}, truck_id={truck_id}, truck_entry={truck_entry}, material_id={material_id}, material_entry={material_entry}, customer_id={customer_id}, quantity={quantity}, unit={unit}, notes={notes}, auto_print={auto_print}, use_now={use_now}, custom_datetime={custom_datetime}")
 
@@ -2362,12 +2365,29 @@ def admin_trucks():
             flash("Truck number already exists.", "error")
         return redirect(url_for("admin_trucks"))
 
+    truck_query = request.args.get("q", "").strip()
+
     with db.cursor() as cursor:
-        cursor.execute(
-            "SELECT id, truck_number, notes AS description, truck_size, trucking_company AS hauled_by, license_plate, active FROM trucks_main ORDER BY truck_number"
-        )
+        if truck_query:
+            like_query = f"%{truck_query}%"
+            cursor.execute(
+                """
+                SELECT id, truck_number, notes AS description, truck_size, trucking_company AS hauled_by, license_plate, active
+                FROM trucks_main
+                WHERE truck_number ILIKE %s
+                   OR COALESCE(truck_size, '') ILIKE %s
+                   OR COALESCE(trucking_company, '') ILIKE %s
+                   OR COALESCE(license_plate, '') ILIKE %s
+                ORDER BY truck_number
+                """,
+                (like_query, like_query, like_query, like_query),
+            )
+        else:
+            cursor.execute(
+                "SELECT id, truck_number, notes AS description, truck_size, trucking_company AS hauled_by, license_plate, active FROM trucks_main ORDER BY truck_number"
+            )
         rows = cursor.fetchall()
-    return render_template("admin_trucks.html", trucks=rows)
+    return render_template("admin_trucks.html", trucks=rows, truck_query=truck_query)
 
 
 @app.post("/admin/trucks/<int:truck_id>/toggle")
