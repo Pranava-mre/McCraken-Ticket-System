@@ -58,9 +58,11 @@
                 <td class="actions">
                     {% if t.has_pdf %}
                     <a href="{{ url_for('ticket_pdf', ticket_id=t.id) }}">PDF</a>
-                    <form method="post" action="{{ url_for('print_ticket', ticket_id=t.id) }}" class="inline-form">
-                        <button type="submit">Reprint</button>
-                    </form>
+                    <a
+                        href="{{ url_for('ticket_pdf', ticket_id=t.id, inline=1) }}"
+                        target="ticket_print_popup"
+                        onclick="window.open('', 'ticket_print_popup', 'width=980,height=780');"
+                    >Reprint</a>
                     {% else %}
                     <span>No PDF</span>
                     <form method="post" action="{{ url_for('generate_ticket_pdf', ticket_id=t.id) }}" class="inline-form">
