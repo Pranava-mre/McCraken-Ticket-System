@@ -270,7 +270,7 @@ def format_ticket_datetime(value):
             dt = datetime.fromisoformat(text)
         except ValueError:
             return text
-    return dt.strftime("%m-%d-%Y - %H:%M")
+    return dt.strftime("%m-%d-%Y - %I:%M %p")
 
 
 @app.template_filter("ticket_datetime")
@@ -845,7 +845,7 @@ def report_to_pdf_bytes(tickets, totals_by_unit, totals_by_material, filters):
     elements.append(Paragraph("Ticket Report", bold))
     elements.append(
         Paragraph(
-            f"Generated: {app_now().strftime('%m-%d-%Y %H:%M')}",
+            f"Generated: {app_now().strftime('%m-%d-%Y %I:%M %p')}",
             normal,
         )
     )
@@ -939,7 +939,7 @@ def materials_report_to_pdf_bytes(materials):
     elements.append(Paragraph("Materials Export", bold))
     elements.append(
         Paragraph(
-            f"Generated: {app_now().strftime('%m-%d-%Y %H:%M')}",
+            f"Generated: {app_now().strftime('%m-%d-%Y %I:%M %p')}",
             normal,
         )
     )
