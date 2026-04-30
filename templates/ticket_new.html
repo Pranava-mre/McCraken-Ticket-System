@@ -2,7 +2,7 @@
 {% block content %}
 <section class="card">
     <h2>Create Ticket</h2>
-    <form method="post" class="form-grid">
+    <form method="post" class="form-grid" id="new_ticket_form">
         <label>Direction
             <select name="direction" required>
                 <option value="IN">IN</option>
@@ -76,7 +76,7 @@
         </label>
 
         <label class="inline">
-            <input type="checkbox" name="auto_print" checked>
+            <input type="checkbox" id="auto_print" name="auto_print" checked>
             Auto print after save
         </label>
 
@@ -183,6 +183,22 @@
     directionSelect.addEventListener("change", (e) => {
         loadMaterials(e.target.value);
     });
+
+    const newTicketForm = document.getElementById("new_ticket_form");
+    const autoPrintCheckbox = document.getElementById("auto_print");
+
+    if (newTicketForm && autoPrintCheckbox) {
+        newTicketForm.addEventListener("submit", () => {
+            if (autoPrintCheckbox.checked) {
+                const popupName = "ticket_print_popup";
+                newTicketForm.target = popupName;
+                const popup = window.open("", popupName, "width=980,height=780");
+                if (popup) popup.focus();
+            } else {
+                newTicketForm.target = "_self";
+            }
+        });
+    }
 
 </script>
 {% endblock %}

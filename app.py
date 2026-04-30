@@ -3,6 +3,7 @@ import os
 import csv
 import re
 import hmac
+import time
 import threading
 from contextlib import closing
 from datetime import datetime
@@ -10,6 +11,7 @@ from pathlib import Path
 from datetime import timedelta
 from urllib.parse import parse_qs, urlparse, unquote
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import psycopg2
 import pyodbc
@@ -61,6 +63,25 @@ REPORT_PDF_DIR = resolve_storage_dir("REPORT_PDF_DIR", "reports_pdf")
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "local-dev-secret-key")
 app.permanent_session_lifetime = timedelta(hours=8)
+
+PROCESS_TZ = os.getenv("TZ", "").strip()
+if PROCESS_TZ and hasattr(time, "tzset"):
+    os.environ["TZ"] = PROCESS_TZ
+    try:
+        time.tzset()
+    except Exception:
+        app.logger.warning("Could not apply process timezone '%s'.", PROCESS_TZ)
+
+APP_TIMEZONE = os.getenv("APP_TIMEZONE", PROCESS_TZ or "UTC").strip() or "UTC"
+try:
+    APP_TZ = ZoneInfo(APP_TIMEZONE)
+except ZoneInfoNotFoundError:
+    APP_TZ = ZoneInfo("UTC")
+    app.logger.warning("Invalid APP_TIMEZONE '%s'. Falling back to UTC.", APP_TIMEZONE)
+
+
+def app_now():
+    return datetime.now(APP_TZ)
 
 APP_USERNAME = os.getenv("APP_USERNAME", "").strip()
 APP_PASSWORD = os.getenv("APP_PASSWORD", "").strip()
@@ -138,7 +159,7 @@ def upload_download_audit_blob(category, filename, file_bytes, mimetype):
 
     safe_category = re.sub(r"[^a-zA-Z0-9_\-]", "_", str(category or "download"))
     safe_name = re.sub(r"[^a-zA-Z0-9._\-]", "_", str(filename or "file"))
-    stamp = datetime.now().strftime("%Y/%m/%d/%H%M%S_%f")
+    stamp = app_now().strftime("%Y/%m/%d/%H%M%S_%f")
     blob_name = (
         f"{AZURE_DOWNLOADS_BLOB_PREFIX}/{safe_category}/{stamp}_{safe_name}"
         if AZURE_DOWNLOADS_BLOB_PREFIX
@@ -229,7 +250,7 @@ def delete_pdf_blob_if_needed(pdf_path):
 def write_temp_pdf_for_print(pdf_bytes, name_prefix):
     cache_dir = BASE_DIR / "tmp_print"
     cache_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    stamp = app_now().strftime("%Y%m%d_%H%M%S_%f")
     path = cache_dir / f"{name_prefix}_{stamp}.pdf"
     with open(path, "wb") as f:
         f.write(pdf_bytes)
@@ -506,7 +527,7 @@ def refresh_jobs_on_startup():
 
 
 def next_ticket_number(db):
-    year = datetime.now().year
+    year = app_now().year
     with db.cursor() as cursor:
         cursor.execute(
             """
@@ -653,7 +674,7 @@ def calculate_ticket_cost(truck, material, quantity_num):
             )
 
         pdf.setFont("Helvetica", 8)
-        pdf.drawRightString(right - 8, 38, f"Printed: {format_ticket_datetime(datetime.now())}")
+        pdf.drawRightString(right - 8, 38, f"Printed: {format_ticket_datetime(app_now())}")
         pdf.showPage()
 
     draw_ticket_page("Driver Copy - Signature Required", True)
@@ -882,7 +903,7 @@ def to_pdf_bytes(ticket):
         pdf.drawRightString(
             right - 8,
             section_bottom + 18,
-            f"Printed: {format_ticket_datetime(datetime.now())}"
+            f"Printed: {format_ticket_datetime(app_now())}"
         )
 
     middle_y = height / 2
@@ -925,7 +946,7 @@ def report_to_pdf_bytes(tickets, totals_by_unit, totals_by_material, filters):
     elements.append(Paragraph("Ticket Report", bold))
     elements.append(
         Paragraph(
-            f"Generated: {datetime.now().strftime('%m-%d-%Y %H:%M')}",
+            f"Generated: {app_now().strftime('%m-%d-%Y %H:%M')}",
             normal,
         )
     )
@@ -1019,7 +1040,7 @@ def materials_report_to_pdf_bytes(materials):
     elements.append(Paragraph("Materials Export", bold))
     elements.append(
         Paragraph(
-            f"Generated: {datetime.now().strftime('%m-%d-%Y %H:%M')}",
+            f"Generated: {app_now().strftime('%m-%d-%Y %H:%M')}",
             normal,
         )
     )
@@ -1068,7 +1089,7 @@ def materials_report_to_pdf_bytes(materials):
     return buffer.read()
 
 def save_pdf(ticket_number, pdf_bytes):
-    year = datetime.now().year
+    year = app_now().year
     if AZURE_STORAGE_CONNECTION_STRING:
         blob_name = f"{AZURE_TICKETS_BLOB_PREFIX}/{year}/{ticket_number}.pdf" if AZURE_TICKETS_BLOB_PREFIX else f"{year}/{ticket_number}.pdf"
         try:
@@ -1184,7 +1205,7 @@ def refresh_jobs_cache(db):
     csv_file = resolve_jobs_csv_path()
     if csv_file is not None:
 
-        now = datetime.now().isoformat(timespec="seconds")
+        now = app_now().isoformat(timespec="seconds")
         synced = 0
 
         with open(csv_file, "r", encoding="utf-8-sig", newline="") as f:
@@ -1279,7 +1300,7 @@ def refresh_jobs_cache(db):
         cursor = conn.cursor()
         rows = cursor.execute(query).fetchall()
 
-    now = datetime.now().isoformat(timespec="seconds")
+    now = app_now().isoformat(timespec="seconds")
     for row in rows:
         job_code = str(row.job_code).strip()
         job_name = str(row.job_name).strip() if row.job_name is not None else ""
@@ -1357,7 +1378,7 @@ def split_job_entry(job_entry):
 
 def get_or_create_manual_job(db, job_entry):
     job_code, job_name = split_job_entry(job_entry)
-    now = datetime.now().isoformat(timespec="seconds")
+    now = app_now().isoformat(timespec="seconds")
     with db.cursor() as cursor:
         cursor.execute(
             """
@@ -1505,6 +1526,7 @@ def healthz():
 @app.route("/tickets/new", methods=["GET", "POST"])
 def new_ticket():
     db = get_db()
+    created_ticket_id = None
 
     if request.method == "POST":
         direction = request.form.get("direction", "IN").strip().upper()
@@ -1603,7 +1625,7 @@ def new_ticket():
         try:
             ticket_number, ticket_year, seq = next_ticket_number(db)
             if use_now:
-                created_at = datetime.now().isoformat(timespec="seconds")
+                created_at = app_now().isoformat(timespec="seconds")
             else:
                 if not custom_datetime:
                     flash("Please select a valid date and time.", "error")
@@ -1641,6 +1663,7 @@ def new_ticket():
                     job_id, job_code_snapshot, job_name_snapshot, tax_exempt, customer_snapshot, truck_id, truck_number_snapshot,
                     material_id, material_name_snapshot, quantity, unit, cost, notes, pdf_path, pdf_blob
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
                 """,
                 (
                     ticket_number,
@@ -1665,18 +1688,20 @@ def new_ticket():
                     pdf_bytes,
                 ),
                 )
+                inserted_ticket = cursor.fetchone()
+                if inserted_ticket:
+                    created_ticket_id = inserted_ticket["id"]
             db.commit()
         except Exception:
             db.rollback()
             raise
 
         if auto_print:
-            try:
-                print_pdf_file(pdf_path)
-            except Exception as exc:
-                flash(f"Ticket saved, but print failed: {exc}", "error")
-                return redirect(url_for("new_ticket"))
-                # return redirect(url_for("search_tickets", ticket_number=ticket_number))
+            if created_ticket_id is not None:
+                # Browser handles printing on the user's device and default printer.
+                return redirect(url_for("ticket_pdf", ticket_id=created_ticket_id, inline=1))
+            flash("Ticket saved, but PDF preview could not be opened automatically.", "error")
+            return redirect(url_for("new_ticket"))
 
         flash(f"Ticket {ticket_number} created.", "success")
         return redirect(url_for("new_ticket"))
@@ -1786,8 +1811,8 @@ def reports():
     material_id = request.args.get("material_id", "").strip()
     offset = int(request.args.get("offset", 0))
     if not date_from and not date_to:
-        date_to = datetime.now().date().isoformat()
-        date_from = (datetime.now().date() - timedelta(days=14)).isoformat()
+        date_to = app_now().date().isoformat()
+        date_from = (app_now().date() - timedelta(days=14)).isoformat()
 
     where = ["1 = 1"]
     params = []
@@ -2036,7 +2061,7 @@ def export_reports_csv():
     output.close()
     csv_bytes.seek(0)
 
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = app_now().strftime("%Y%m%d_%H%M%S")
     download_filename = f"ticket_report_{stamp}.csv"
     csv_payload = csv_bytes.getvalue()
     try:
@@ -2150,7 +2175,7 @@ def print_reports():
         },
     )
 
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = app_now().strftime("%Y%m%d_%H%M%S")
     report_filename = f"ticket_report_{stamp}.pdf"
 
     if AZURE_STORAGE_CONNECTION_STRING:
@@ -2213,6 +2238,7 @@ def print_reports():
 @app.get("/tickets/<int:ticket_id>/pdf")
 def ticket_pdf(ticket_id):
     db = get_db()
+    inline_pdf = str(request.args.get("inline", "")).strip().lower() in {"1", "true", "yes", "on"}
     with db.cursor() as cursor:
         cursor.execute("SELECT ticket_number, pdf_path, pdf_blob FROM tickets WHERE id = %s", (ticket_id,))
         row = cursor.fetchone()
@@ -2236,7 +2262,7 @@ def ticket_pdf(ticket_id):
         return send_file(
             io.BytesIO(pdf_blob),
             mimetype="application/pdf",
-            as_attachment=True,
+            as_attachment=not inline_pdf,
             download_name=ticket_filename,
         )
 
@@ -2247,7 +2273,7 @@ def ticket_pdf(ticket_id):
             return send_file(
                 path_obj,
                 mimetype="application/pdf",
-                as_attachment=True,
+                as_attachment=not inline_pdf,
                 download_name=ticket_filename,
             )
 
@@ -2453,7 +2479,7 @@ def export_materials_pdf():
         rows = cursor.fetchall()
 
     pdf_bytes = materials_report_to_pdf_bytes(rows)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = app_now().strftime("%Y%m%d_%H%M%S")
     filename = f"materials_export_{stamp}.pdf"
 
     try:
@@ -2526,7 +2552,7 @@ def export_materials_csv():
         ])
 
     csv_bytes = output.getvalue().encode("utf-8")
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = app_now().strftime("%Y%m%d_%H%M%S")
     filename = f"materials_export_{stamp}.csv"
 
     try:
