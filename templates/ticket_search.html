@@ -69,9 +69,6 @@
                         <button type="submit">Generate PDF</button>
                     </form>
                     {% endif %}
-                    <form method="post" action="{{ url_for('void_ticket', ticket_id=t.id) }}" class="inline-form" onsubmit="return confirm('Are you sure you want to void this ticket? This action cannot be undone.');">
-                        <button type="submit" class="danger">Void</button>
-                    </form>
                 </td>
             </tr>
             {% else %}

@@ -1,0 +1,202 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+    <h2>Edit Tickets</h2>
+    <form method="get" class="form-grid">
+        <label>Ticket #
+            <input type="text" name="ticket_number" value="{{ ticket_number }}">
+        </label>
+        <label>Truck
+            <input type="text" name="truck" value="{{ truck }}">
+        </label>
+        <label>Job Code
+            <input type="text" name="job" value="{{ job }}">
+        </label>
+        <label>Material
+            <input type="text" name="material" value="{{ material }}">
+        </label>
+        <label>Date From
+            <input type="date" name="date_from" value="{{ date_from }}">
+        </label>
+        <label>Date To
+            <input type="date" name="date_to" value="{{ date_to }}">
+        </label>
+        <div class="actions full">
+            <button type="submit">Search</button>
+            <a href="{{ url_for('edit_tickets') }}">Clear</a>
+        </div>
+    </form>
+</section>
+
+<section class="card">
+    <div class="table-wrap">
+        <table class="edit-tickets-table">
+            <thead>
+                <tr>
+                    <th>Ticket #</th>
+                    <th>Date/Time</th>
+                    <th>Dir</th>
+                    <th>Job</th>
+                    <th>Customer</th>
+                    <th>Truck</th>
+                    <th>Material</th>
+                    <th>Qty</th>
+                    <th>Unit</th>
+                    <th>Cost</th>
+                    <th>Notes</th>
+                    <th>Password</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for t in tickets %}
+                <tr>
+                    <td>{{ t.ticket_number }}</td>
+                    <td>
+                        <input type="datetime-local" name="created_at" value="{{ t.created_at_input }}" required form="edit-form-{{ t.id }}">
+                    </td>
+                    <td>
+                        <select
+                            name="direction"
+                            id="direction-{{ t.id }}"
+                            class="edit-direction"
+                            data-ticket-id="{{ t.id }}"
+                            required
+                            form="edit-form-{{ t.id }}"
+                        >
+                            <option value="IN" {% if t.direction == 'IN' %}selected{% endif %}>IN</option>
+                            <option value="OUT" {% if t.direction == 'OUT' %}selected{% endif %}>OUT</option>
+                        </select>
+                    </td>
+                    <td>
+                        <select name="job_selected" required form="edit-form-{{ t.id }}">
+                            <option value="" disabled {% if not t.job_selected %}selected{% endif %}>Select Job</option>
+                            {% for job in jobs %}
+                            <option value="{{ job.job_key }}" {% if t.job_selected == job.job_key %}selected{% endif %}>
+                                {{ job.job_code }} - {{ job.job_name }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </td>
+                    <td>
+                        <select name="customer_id" required form="edit-form-{{ t.id }}">
+                            <option value="" disabled {% if not t.customer_snapshot %}selected{% endif %}>Select Customer</option>
+                            {% for c in customers %}
+                            <option value="{{ c.id }}" {% if c.customer_name == t.customer_snapshot %}selected{% endif %}>
+                                {{ c.customer_name }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </td>
+                    <td>
+                        <select name="truck_id" required form="edit-form-{{ t.id }}">
+                            <option value="" disabled {% if not t.truck_number_snapshot %}selected{% endif %}>Select Truck</option>
+                            {% for tr in trucks %}
+                            <option
+                                value="{{ tr.id }}"
+                                {% if (t.truck_id and tr.id == t.truck_id) or (tr.truck_number == t.truck_number_snapshot) %}selected{% endif %}
+                            >
+                                {{ tr.truck_number }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </td>
+                    <td>
+                        <select
+                            name="material_id"
+                            id="material-{{ t.id }}"
+                            class="edit-material"
+                            data-ticket-id="{{ t.id }}"
+                            required
+                            form="edit-form-{{ t.id }}"
+                        >
+                            <option value="" disabled>Select Material</option>
+                            {% for m in materials %}
+                            <option
+                                value="{{ m.id }}"
+                                data-direction="{{ m.direction }}"
+                                {% if (t.material_id and m.id == t.material_id) or (m.material_name == t.material_name_snapshot) %}selected{% endif %}
+                            >
+                                {{ m.material_name }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </td>
+                    <td>
+                        <input type="number" step="0.01" name="quantity" value="{{ '%.2f'|format(t.quantity or 0) }}" required form="edit-form-{{ t.id }}">
+                    </td>
+                    <td>
+                        <input type="text" name="unit" value="{{ t.unit }}" required form="edit-form-{{ t.id }}">
+                    </td>
+                    <td>
+                        <input type="number" step="0.01" name="cost" value="{{ '%.2f'|format(t.cost or 0) }}" required form="edit-form-{{ t.id }}">
+                    </td>
+                    <td>
+                        <input type="text" name="notes" value="{{ t.notes or '' }}" form="edit-form-{{ t.id }}">
+                    </td>
+                    <td>
+                        <input type="password" name="admin_password" required form="edit-form-{{ t.id }}">
+                    </td>
+                    <td class="actions actions-column">
+                        <form id="edit-form-{{ t.id }}" method="post" action="{{ url_for('save_ticket_edit', ticket_id=t.id) }}">
+                            <input type="hidden" name="ticket_number" value="{{ ticket_number }}">
+                            <input type="hidden" name="truck" value="{{ truck }}">
+                            <input type="hidden" name="job" value="{{ job }}">
+                            <input type="hidden" name="material" value="{{ material }}">
+                            <input type="hidden" name="date_from" value="{{ date_from }}">
+                            <input type="hidden" name="date_to" value="{{ date_to }}">
+                        </form>
+                        <button type="submit" form="edit-form-{{ t.id }}">Save</button>
+                        <button
+                            type="submit"
+                            form="edit-form-{{ t.id }}"
+                            formaction="{{ url_for('void_ticket_from_edit', ticket_id=t.id) }}"
+                            formmethod="post"
+                            class="danger"
+                            onclick="return confirm('Void this ticket version?');"
+                        >Void</button>
+                    </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="13">No active tickets found.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<script>
+    function filterMaterialOptionsForRow(ticketId) {
+        const directionSelect = document.getElementById(`direction-${ticketId}`);
+        const materialSelect = document.getElementById(`material-${ticketId}`);
+        if (!directionSelect || !materialSelect) return;
+
+        const wantedDirection = (directionSelect.value || "").toUpperCase();
+        const currentValue = materialSelect.value;
+        let hasVisibleSelection = false;
+
+        for (const opt of materialSelect.options) {
+            if (!opt.value) {
+                opt.hidden = false;
+                continue;
+            }
+            const optDirection = (opt.dataset.direction || "").toUpperCase();
+            const visible = optDirection === wantedDirection;
+            opt.hidden = !visible;
+            if (visible && opt.value === currentValue) {
+                hasVisibleSelection = true;
+            }
+        }
+
+        if (!hasVisibleSelection) {
+            materialSelect.value = "";
+        }
+    }
+
+    document.querySelectorAll(".edit-direction").forEach((el) => {
+        const ticketId = el.dataset.ticketId;
+        filterMaterialOptionsForRow(ticketId);
+        el.addEventListener("change", () => filterMaterialOptionsForRow(ticketId));
+    });
+</script>
+{% endblock %}

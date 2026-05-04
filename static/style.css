@@ -229,6 +229,57 @@ td {
     overflow-x: auto;
 }
 
+.edit-tickets-table {
+    font-size: 13px;
+}
+
+.edit-tickets-table th,
+.edit-tickets-table td {
+    padding: 5px;
+}
+
+.edit-tickets-table input,
+.edit-tickets-table select {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 4px 6px;
+    font-size: 10px;
+}
+
+.edit-tickets-table input[type="datetime-local"] {
+    min-width: 50px;
+}
+
+.edit-tickets-table input[type="number"] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+}
+
+.edit-tickets-table input[type="number"]::-webkit-outer-spin-button,
+.edit-tickets-table input[type="number"]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.edit-tickets-table select[name="job_selected"]{
+    min-width: 80px;
+}
+.edit-tickets-table select[name="customer_id"]{
+    min-width: 60px;
+}
+.edit-tickets-table select[name="truck_id"]{
+    min-width: 60px;
+}
+.edit-tickets-table select[name="material_id"]{
+    min-width: 60px;
+}
+.edit-tickets-table select[name="direction"]{
+    min-width: 40px;
+}
+.edit-tickets-table input[name="notes"] {
+    min-width: 60px;
+}
+
 .flash {
     padding: 8px 10px;
     border-radius: 6px;

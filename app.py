@@ -489,8 +489,11 @@ def ensure_db_migrations(conn):
         cursor.execute("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS customer_snapshot TEXT NOT NULL DEFAULT ''")
         cursor.execute("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS tax_exempt TEXT NOT NULL DEFAULT ''")
         cursor.execute("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS cost REAL NOT NULL DEFAULT 0")
+        cursor.execute("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE")
+        cursor.execute("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS modified_to_id BIGINT")
         cursor.execute("ALTER TABLE tickets ALTER COLUMN pdf_path DROP NOT NULL")
         cursor.execute("ALTER TABLE tickets ALTER COLUMN pdf_blob DROP NOT NULL")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tickets_active ON tickets(active)")
         cursor.execute("ALTER TABLE trucks ADD COLUMN IF NOT EXISTS truck_size TEXT NOT NULL DEFAULT ''")
         cursor.execute("ALTER TABLE trucks ADD COLUMN IF NOT EXISTS hauled_by TEXT NOT NULL DEFAULT ''")
         cursor.execute(
@@ -1028,6 +1031,34 @@ def is_active_column_boolean(db, table_name):
     return bool(row) and row["data_type"] == "boolean"
 
 
+def validate_ticket_edit_password(admin_password):
+    configured_password = os.getenv("TICKET_EDIT_PASSWORD", "").strip()
+    if not configured_password:
+        return False, "Ticket edit password is not configured on server."
+    if not hmac.compare_digest(admin_password, configured_password):
+        return False, "Password failed."
+    return True, ""
+
+
+def parse_optional_int(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    return int(text)
+
+
+def to_datetime_local_value(value):
+    if value is None:
+        return ""
+    try:
+        dt = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).strip())
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(APP_TZ).replace(tzinfo=None)
+        return dt.strftime("%Y-%m-%dT%H:%M")
+    except Exception:
+        return ""
+
+
 def validate_material_admin_password(admin_password):
     configured_password = os.getenv("MATERIAL_ADMIN_PASSWORD", "").strip()
     if not configured_password:
@@ -1281,7 +1312,8 @@ def list_recent_tickets(db, limit=5):
                 quantity,
                 unit
             FROM tickets
-            ORDER BY id DESC
+            WHERE COALESCE(active, TRUE) = TRUE
+            ORDER BY created_at DESC, id DESC
             LIMIT %s
             """,
             (limit,),
@@ -1472,8 +1504,8 @@ def new_ticket():
         if not all([job_entry, truck_entry, material_entry, quantity, unit]):
             flash("Job, truck, material, quantity, and unit are required.", "error")
             return redirect(url_for("new_ticket"))
-        if not all([job_id, truck_id, material_id, customer_id]):
-            flash("Please select job, customer, truck, and material from dropdown lists.", "error")
+        if not all([truck_id, material_id, customer_id]):
+            flash("Please select customer, truck, and material from dropdown lists.", "error")
             return redirect(url_for("new_ticket"))
         # print(f"Received new ticket data: direction={direction}, job_id={job_id}, job_entry={job_entry}, truck_id={truck_id}, truck_entry={truck_entry}, material_id={material_id}, material_entry={material_entry}, customer_id={customer_id}, quantity={quantity}, unit={unit}, notes={notes}, auto_print={auto_print}, use_now={use_now}, custom_datetime={custom_datetime}")
 
@@ -1698,7 +1730,7 @@ def search_tickets():
                 ELSE FALSE
             END AS has_pdf
         FROM tickets
-        WHERE 1 = 1
+        WHERE COALESCE(active, TRUE) = TRUE
     """
     params = []
     if ticket_number:
@@ -1719,12 +1751,354 @@ def search_tickets():
     if date_to:
         query += " AND date(created_at) <= date(%s)"
         params.append(date_to)
-    query += " ORDER BY id DESC LIMIT 200"
+    query += " ORDER BY created_at DESC, id DESC LIMIT 200"
 
     with db.cursor() as cursor:
         cursor.execute(query, tuple(params))
         tickets = cursor.fetchall()
     return render_template("ticket_search.html", tickets=tickets)
+
+
+@app.route("/tickets/edit", methods=["GET"])
+def edit_tickets():
+    db = get_db()
+    ticket_number = request.args.get("ticket_number", "").strip()
+    truck = request.args.get("truck", "").strip()
+    job = request.args.get("job", "").strip()
+    material = request.args.get("material", "").strip()
+    date_from = request.args.get("date_from", "").strip()
+    date_to = request.args.get("date_to", "").strip()
+
+    # Default edit view to today's tickets when no explicit date range is provided.
+    if not date_from and not date_to:
+        today = app_now().date().isoformat()
+        date_from = today
+        date_to = today
+
+    query = """
+        SELECT
+            id,
+            ticket_number,
+            created_at,
+            direction,
+            job_id,
+            job_code_snapshot,
+            job_name_snapshot,
+            tax_exempt,
+            customer_snapshot,
+            truck_id,
+            truck_number_snapshot,
+            material_id,
+            material_name_snapshot,
+            quantity,
+            unit,
+            cost,
+            notes
+        FROM tickets
+        WHERE COALESCE(active, TRUE) = TRUE
+    """
+    params = []
+    if ticket_number:
+        query += " AND ticket_number ILIKE %s"
+        params.append(f"%{ticket_number}%")
+    if truck:
+        query += " AND truck_number_snapshot ILIKE %s"
+        params.append(f"%{truck}%")
+    if job:
+        query += " AND job_code_snapshot ILIKE %s"
+        params.append(f"%{job}%")
+    if material:
+        query += " AND material_name_snapshot ILIKE %s"
+        params.append(f"%{material}%")
+    if date_from:
+        query += " AND date(created_at) >= date(%s)"
+        params.append(date_from)
+    if date_to:
+        query += " AND date(created_at) <= date(%s)"
+        params.append(date_to)
+    query += " ORDER BY created_at DESC, id DESC LIMIT 200"
+
+    with db.cursor() as cursor:
+        cursor.execute(query, tuple(params))
+        tickets = cursor.fetchall()
+        jobs = list_ticket_jobs(db)
+        customers = list_customers(db)
+        trucks = list_trucks(db)
+        materials = list_materials(db)
+
+        manual_lookup = {}
+        with db.cursor() as cursor:
+            cursor.execute("SELECT id, job_code, job_name FROM manual_jobs")
+            for row in cursor.fetchall():
+                manual_lookup[(str(row["job_code"] or "").strip(), str(row["job_name"] or "").strip())] = row["id"]
+
+        cache_lookup = {}
+        with db.cursor() as cursor:
+            cursor.execute("SELECT id, job_code, job_name FROM jobs_cache")
+            for row in cursor.fetchall():
+                cache_lookup[(str(row["job_code"] or "").strip(), str(row["job_name"] or "").strip())] = row["id"]
+
+    for t in tickets:
+        t["created_at_input"] = to_datetime_local_value(t.get("created_at"))
+        job_code = str(t.get("job_code_snapshot") or "").strip()
+        job_name = str(t.get("job_name_snapshot") or "").strip()
+        if t.get("job_id"):
+            t["job_selected"] = f"cache:{t['job_id']}"
+        elif (job_code, job_name) in manual_lookup:
+            t["job_selected"] = f"manual:{manual_lookup[(job_code, job_name)]}"
+        elif (job_code, job_name) in cache_lookup:
+            t["job_selected"] = f"cache:{cache_lookup[(job_code, job_name)]}"
+        else:
+            t["job_selected"] = ""
+
+    return render_template(
+        "tickets_edit.html",
+        tickets=tickets,
+        jobs=jobs,
+        customers=customers,
+        trucks=trucks,
+        materials=materials,
+        ticket_number=ticket_number,
+        truck=truck,
+        job=job,
+        material=material,
+        date_from=date_from,
+        date_to=date_to,
+    )
+
+
+@app.post("/tickets/<int:ticket_id>/edit-save")
+def save_ticket_edit(ticket_id):
+    db = get_db()
+
+    admin_password = request.form.get("admin_password", "")
+    password_ok, password_message = validate_ticket_edit_password(admin_password)
+    if not password_ok:
+        flash(f"{password_message} Ticket was not updated.", "error")
+        return redirect(url_for("edit_tickets"))
+
+    filter_keys = ["ticket_number", "truck", "job", "material", "date_from", "date_to"]
+    filter_args = {}
+    for key in filter_keys:
+        value = request.form.get(key, "").strip()
+        if value:
+            filter_args[key] = value
+
+    try:
+        with db.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id
+                FROM tickets
+                WHERE id = %s AND COALESCE(active, TRUE) = TRUE
+                """,
+                (ticket_id,),
+            )
+            old_row = cursor.fetchone()
+
+        if not old_row:
+            flash("Ticket not found or already inactive.", "error")
+            return redirect(url_for("edit_tickets", **filter_args))
+
+        direction = request.form.get("direction", "").strip().upper()
+        if direction not in {"IN", "OUT"}:
+            flash("Direction must be IN or OUT.", "error")
+            return redirect(url_for("edit_tickets", **filter_args))
+
+        created_at_raw = request.form.get("created_at", "").strip()
+        if not created_at_raw:
+            flash("Date/Time is required.", "error")
+            return redirect(url_for("edit_tickets", **filter_args))
+
+        try:
+            created_at = datetime.fromisoformat(created_at_raw).isoformat(timespec="seconds")
+        except ValueError:
+            flash("Invalid date/time format.", "error")
+            return redirect(url_for("edit_tickets", **filter_args))
+
+        selected_job_id = request.form.get("job_selected", "").strip()
+        customer_id = parse_optional_int(request.form.get("customer_id", ""))
+        truck_id = parse_optional_int(request.form.get("truck_id", ""))
+        material_id = parse_optional_int(request.form.get("material_id", ""))
+
+        if not selected_job_id or not customer_id or not truck_id or not material_id:
+            flash("Please choose job, customer, truck, and material from dropdowns.", "error")
+            return redirect(url_for("edit_tickets", **filter_args))
+
+        selected_job, selected_job_source = get_selected_job(db, selected_job_id)
+        if not selected_job:
+            flash("Selected job was not found.", "error")
+            return redirect(url_for("edit_tickets", **filter_args))
+
+        with db.cursor() as cursor:
+            cursor.execute("SELECT id, customer_name FROM customers WHERE id = %s", (customer_id,))
+            selected_customer = cursor.fetchone()
+        if not selected_customer:
+            flash("Selected customer was not found.", "error")
+            return redirect(url_for("edit_tickets", **filter_args))
+
+        with db.cursor() as cursor:
+            cursor.execute("SELECT id, truck_number FROM trucks_main WHERE id = %s", (truck_id,))
+            selected_truck = cursor.fetchone()
+        if not selected_truck:
+            flash("Selected truck was not found.", "error")
+            return redirect(url_for("edit_tickets", **filter_args))
+
+        with db.cursor() as cursor:
+            cursor.execute("SELECT id, material AS material_name, direction FROM material_price WHERE id = %s", (material_id,))
+            selected_material = cursor.fetchone()
+        if not selected_material:
+            flash("Selected material was not found.", "error")
+            return redirect(url_for("edit_tickets", **filter_args))
+        if str(selected_material.get("direction") or "").strip().upper() != direction:
+            flash("Selected material direction does not match ticket direction.", "error")
+            return redirect(url_for("edit_tickets", **filter_args))
+
+        job_id_value = selected_job["id"] if selected_job_source == "cache" else None
+        job_code_snapshot = str(selected_job.get("job_code") or "").strip()
+        job_name_snapshot = str(selected_job.get("job_name") or "").strip()
+        tax_exempt = str(selected_job.get("tax_exempt") or "").strip()
+        customer_snapshot = str(selected_customer.get("customer_name") or "").strip()
+        truck_number_snapshot = str(selected_truck.get("truck_number") or "").strip()
+        material_name_snapshot = str(selected_material.get("material_name") or "").strip()
+        unit = request.form.get("unit", "").strip()
+        notes = request.form.get("notes", "").strip()
+
+        if not all([
+            job_code_snapshot,
+            job_name_snapshot,
+            customer_snapshot,
+            truck_number_snapshot,
+            material_name_snapshot,
+            unit,
+        ]):
+            flash("Job, customer, truck, material, and unit fields are required.", "error")
+            return redirect(url_for("edit_tickets", **filter_args))
+
+        try:
+            quantity = float(request.form.get("quantity", "").strip())
+            cost = float(request.form.get("cost", "").strip())
+        except ValueError:
+            flash("Quantity and cost must be numeric.", "error")
+            return redirect(url_for("edit_tickets", **filter_args))
+
+        ticket_number, ticket_year, seq = next_ticket_number(db)
+        new_ticket_row = {
+            "ticket_number": ticket_number,
+            "created_at": created_at,
+            "direction": direction,
+            "job_code_snapshot": job_code_snapshot,
+            "job_name_snapshot": job_name_snapshot,
+            "tax_exempt": tax_exempt,
+            "customer_snapshot": customer_snapshot,
+            "truck_number_snapshot": truck_number_snapshot,
+            "material_name_snapshot": material_name_snapshot,
+            "quantity": quantity,
+            "unit": unit,
+            "cost": cost,
+            "notes": notes,
+        }
+
+        pdf_bytes = to_pdf_bytes(new_ticket_row)
+        pdf_path = save_pdf(ticket_number, pdf_bytes)
+
+        with db.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO tickets (
+                    ticket_number, ticket_year, ticket_sequence, direction, created_at,
+                    job_id, job_code_snapshot, job_name_snapshot, tax_exempt, customer_snapshot,
+                    truck_id, truck_number_snapshot, material_id, material_name_snapshot,
+                    quantity, unit, cost, notes, active, modified_to_id, pdf_path, pdf_blob
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE, NULL, %s, %s)
+                RETURNING id
+                """,
+                (
+                    ticket_number,
+                    ticket_year,
+                    seq,
+                    direction,
+                    created_at,
+                    job_id_value,
+                    job_code_snapshot,
+                    job_name_snapshot,
+                    tax_exempt,
+                    customer_snapshot,
+                    selected_truck["id"],
+                    truck_number_snapshot,
+                    selected_material["id"],
+                    material_name_snapshot,
+                    quantity,
+                    unit,
+                    cost,
+                    notes,
+                    pdf_path,
+                    pdf_bytes,
+                ),
+            )
+            inserted = cursor.fetchone()
+            new_ticket_id = inserted["id"]
+
+            cursor.execute(
+                """
+                UPDATE tickets
+                SET active = FALSE, modified_to_id = %s
+                WHERE id = %s AND COALESCE(active, TRUE) = TRUE
+                """,
+                (new_ticket_id, ticket_id),
+            )
+
+        db.commit()
+        flash(f"Ticket updated. New ticket {ticket_number} created.", "success")
+    except Exception as exc:
+        db.rollback()
+        flash(f"Could not update ticket: {exc}", "error")
+
+    return redirect(url_for("edit_tickets", **filter_args))
+
+
+@app.post("/tickets/<int:ticket_id>/edit-void")
+def void_ticket_from_edit(ticket_id):
+    db = get_db()
+
+    admin_password = request.form.get("admin_password", "")
+    password_ok, password_message = validate_ticket_edit_password(admin_password)
+    if not password_ok:
+        flash(f"{password_message} Ticket was not voided.", "error")
+        return redirect(url_for("edit_tickets"))
+
+    filter_keys = ["ticket_number", "truck", "job", "material", "date_from", "date_to"]
+    filter_args = {}
+    for key in filter_keys:
+        value = request.form.get(key, "").strip()
+        if value:
+            filter_args[key] = value
+
+    try:
+        with db.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE tickets
+                SET active = FALSE
+                WHERE id = %s AND COALESCE(active, TRUE) = TRUE
+                RETURNING ticket_number
+                """,
+                (ticket_id,),
+            )
+            row = cursor.fetchone()
+
+        if not row:
+            db.rollback()
+            flash("Ticket not found or already inactive.", "error")
+            return redirect(url_for("edit_tickets", **filter_args))
+
+        db.commit()
+        flash(f"Ticket {row['ticket_number']} was voided.", "success")
+    except Exception as exc:
+        db.rollback()
+        flash(f"Could not void ticket: {exc}", "error")
+
+    return redirect(url_for("edit_tickets", **filter_args))
 
 
 @app.route("/reports", methods=["GET"])
@@ -1740,7 +2114,7 @@ def reports():
         date_to = app_now().date().isoformat()
         date_from = (app_now().date() - timedelta(days=14)).isoformat()
 
-    where = ["1 = 1"]
+    where = ["COALESCE(t.active, TRUE) = TRUE"]
     params = []
 
     if date_from:
@@ -1788,6 +2162,7 @@ def reports():
                 WHEN t.direction = 'OUT' THEN 2
                 ELSE 3 
             END,
+            t.created_at DESC,
             t.id DESC
         LIMIT 20 OFFSET %s
         """,
@@ -1870,7 +2245,7 @@ def export_reports_csv():
     job_id = request.args.get("job_id", "").strip()
     material_id = request.args.get("material_id", "").strip()
 
-    where = ["1 = 1"]
+    where = ["COALESCE(t.active, TRUE) = TRUE"]
     params = []
 
     if date_from:
@@ -1908,7 +2283,7 @@ def export_reports_csv():
             t.cost
         FROM tickets t
         WHERE {where_sql}
-        ORDER BY t.id DESC
+        ORDER BY t.created_at DESC, t.id DESC
         LIMIT 1000
         """,
         tuple(params),
@@ -2033,7 +2408,7 @@ def print_reports():
     job_id = request.args.get("job_id", "")
     material_id = request.args.get("material_id", "")
 
-    where = ["1=1"]
+    where = ["COALESCE(t.active, TRUE)=TRUE"]
     params = []
 
     if date_from:
@@ -2070,6 +2445,7 @@ def print_reports():
                 WHEN t.direction='IN' THEN 1
                 WHEN t.direction='OUT' THEN 2
             END,
+            t.created_at DESC,
             t.id DESC
         """,
         tuple(params),
@@ -2306,7 +2682,7 @@ def generate_ticket_pdf(ticket_id):
 def void_ticket(ticket_id):
     db = get_db()
     with db.cursor() as cursor:
-        cursor.execute("SELECT ticket_number, pdf_path FROM tickets WHERE id = %s", (ticket_id,))
+        cursor.execute("SELECT ticket_number FROM tickets WHERE id = %s", (ticket_id,))
         row = cursor.fetchone()
 
     if not row:
@@ -2315,22 +2691,15 @@ def void_ticket(ticket_id):
 
     try:
         with db.cursor() as cursor:
-            cursor.execute("DELETE FROM tickets WHERE id = %s", (ticket_id,))
+            cursor.execute(
+                "UPDATE tickets SET active = FALSE WHERE id = %s AND COALESCE(active, TRUE) = TRUE",
+                (ticket_id,),
+            )
+            if cursor.rowcount == 0:
+                flash("Ticket is already inactive.", "error")
+                db.rollback()
+                return redirect(request.referrer or url_for("search_tickets"))
         db.commit()
-
-        pdf_path = (row.get("pdf_path") or "").strip()
-        if pdf_path:
-            try:
-                if pdf_path.lower().startswith("http"):
-                    delete_pdf_blob_if_needed(pdf_path)
-                else:
-                    path_obj = Path(pdf_path)
-                    if path_obj.exists():
-                        path_obj.unlink()
-            except OSError:
-                # Ticket is removed from DB even if the old PDF file cleanup fails.
-                pass
-
         flash(f"Ticket {row['ticket_number']} was voided.", "success")
     except Exception as exc:
         db.rollback()

@@ -97,11 +97,14 @@ CREATE TABLE IF NOT EXISTS tickets (
     unit TEXT NOT NULL,
     cost REAL NOT NULL DEFAULT 0,
     notes TEXT,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    modified_to_id BIGINT,
     pdf_path TEXT,
     pdf_blob BYTEA,
     FOREIGN KEY(job_id) REFERENCES jobs_cache(id),
     FOREIGN KEY(truck_id) REFERENCES trucks_main(id),
-    FOREIGN KEY(material_id) REFERENCES material_price(id)
+    FOREIGN KEY(material_id) REFERENCES material_price(id),
+    FOREIGN KEY(modified_to_id) REFERENCES tickets(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_tickets_created_at ON tickets(created_at);
