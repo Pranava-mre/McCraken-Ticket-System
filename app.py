@@ -930,6 +930,182 @@ def report_to_pdf_bytes(tickets, totals_by_unit, totals_by_material, filters):
     return buffer.read()
 
 
+def daily_report_to_pdf_bytes(job_blocks, report_date, totals):
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
+
+    left = 18
+    right = width - 18
+    top = height - 28
+    grid_bottom = 95
+
+    cols = 3
+    rows = 6
+    cell_w = (right - left) / cols
+    cell_h = (top - grid_bottom) / rows
+    header_h = 15
+
+    header_colors = [
+        colors.HexColor("#7dd3fc"),
+        colors.HexColor("#86efac"),
+        colors.HexColor("#fde68a"),
+        colors.HexColor("#f9a8d4"),
+    ]
+
+    def clip_text(text, font_name, font_size, max_width):
+        value = str(text or "")
+        if pdf.stringWidth(value, font_name, font_size) <= max_width:
+            return value
+        suffix = "..."
+        while value and pdf.stringWidth(value + suffix, font_name, font_size) > max_width:
+            value = value[:-1]
+        return (value + suffix) if value else suffix
+
+    pdf.setFont("Helvetica-Bold", 12)
+    pdf.drawCentredString(width / 2, height - 16, "Daily Dispatch Report")
+
+    max_blocks = cols * rows
+    for idx in range(max_blocks):
+        col = idx % cols
+        row = idx // cols
+
+        x = left + (col * cell_w)
+        y_top = top - (row * cell_h)
+        y_bottom = y_top - cell_h
+
+        pdf.setLineWidth(1)
+        pdf.setStrokeColor(colors.black)
+        pdf.rect(x, y_bottom, cell_w, cell_h)
+
+        if idx >= len(job_blocks):
+            continue
+
+        block = job_blocks[idx]
+        color = header_colors[idx % len(header_colors)]
+
+        pdf.setFillColor(color)
+        pdf.rect(x + 1, y_top - header_h - 1, cell_w - 2, header_h, stroke=0, fill=1)
+        pdf.setFillColor(colors.black)
+
+        job_code = str(block.get("job_code") or "").strip()
+        job_name = str(block.get("job_name") or "").strip()
+        if job_code and job_name:
+            header_text = f"{job_code} - {job_name}"
+        elif job_code:
+            header_text = job_code
+        elif job_name:
+            header_text = job_name
+        else:
+            header_text = "Unassigned Job"
+
+        pdf.setFont("Helvetica-Bold", 10)
+        header_text = clip_text(header_text, "Helvetica-Bold", 10, cell_w - 8)
+        pdf.drawString(x + 4, y_top - 11, header_text)
+
+        y_text = y_top - header_h - 12
+        pdf.setFont("Helvetica", 10)
+        for truck_row in block.get("trucks", []):
+            if y_text < y_bottom + 7:
+                break
+            truck_name = str(truck_row.get("truck") or "").strip() or "Unknown Truck"
+            loads = int(truck_row.get("loads") or 0)
+            if loads > 1:
+                line = f"- {truck_name} ({loads})"
+            else:
+                line = f"- {truck_name}"
+            line = clip_text(line, "Helvetica", 10, cell_w - 10)
+            pdf.drawString(x + 4, y_text, line)
+            y_text -= 12
+
+    date_text = report_date.strftime("%m/%d/%y")
+    pdf.setFont("Helvetica-Bold", 20)
+    pdf.drawRightString(right - 8, grid_bottom - 12, date_text)
+
+    stats_x = left + (2 * cell_w) + 6
+    stats_y = 66
+    pdf.setFont("Helvetica-Bold", 10)
+    pdf.drawString(stats_x, stats_y, f"TOTAL TRUCKS: {int(totals.get('total_trucks') or 0)}")
+    pdf.drawString(stats_x, stats_y - 16, f"TOTAL LOADS IN: {int(totals.get('loads_in') or 0)}")
+    pdf.drawString(stats_x, stats_y - 32, f"TOTAL LOADS OUT: {int(totals.get('loads_out') or 0)}")
+    pdf.drawString(stats_x, stats_y - 54, f"TOTAL LOADS: {int(totals.get('total_loads') or 0)}")
+
+    if len(job_blocks) > max_blocks:
+        overflow = len(job_blocks) - max_blocks
+        pdf.setFont("Helvetica", 9)
+        pdf.drawString(left + 6, 44, f"Additional jobs not shown on this page: {overflow}")
+
+    pdf.showPage()
+    pdf.save()
+    buffer.seek(0)
+    return buffer.read()
+
+
+def build_daily_report_data(db, report_date_str):
+    with db.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT
+                COALESCE(NULLIF(TRIM(t.job_code_snapshot), ''), '') AS job_code,
+                COALESCE(NULLIF(TRIM(t.job_name_snapshot), ''), '') AS job_name,
+                COALESCE(NULLIF(TRIM(t.truck_number_snapshot), ''), '') AS truck_number,
+                COUNT(*) AS load_count
+            FROM tickets t
+            WHERE COALESCE(t.active, TRUE) = TRUE
+              AND date(t.created_at) = date(%s)
+            GROUP BY 1, 2, 3
+            ORDER BY 1, 2, 3
+            """,
+            (report_date_str,),
+        )
+        grouped_rows = cursor.fetchall()
+
+    with db.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT
+                COUNT(DISTINCT NULLIF(TRIM(t.truck_number_snapshot), '')) AS total_trucks,
+                COUNT(*) FILTER (WHERE t.direction = 'IN') AS loads_in,
+                COUNT(*) FILTER (WHERE t.direction = 'OUT') AS loads_out,
+                COUNT(*) AS total_loads
+            FROM tickets t
+            WHERE COALESCE(t.active, TRUE) = TRUE
+              AND date(t.created_at) = date(%s)
+            """,
+            (report_date_str,),
+        )
+        totals = cursor.fetchone() or {
+            "total_trucks": 0,
+            "loads_in": 0,
+            "loads_out": 0,
+            "total_loads": 0,
+        }
+
+    job_map = {}
+    for row in grouped_rows:
+        job_code = str(row.get("job_code") or "").strip()
+        job_name = str(row.get("job_name") or "").strip()
+        truck_number = str(row.get("truck_number") or "").strip()
+        load_count = int(row.get("load_count") or 0)
+
+        key = (job_code, job_name)
+        if key not in job_map:
+            job_map[key] = {
+                "job_code": job_code,
+                "job_name": job_name,
+                "trucks": [],
+            }
+
+        if truck_number:
+            job_map[key]["trucks"].append({
+                "truck": truck_number,
+                "loads": load_count,
+            })
+
+    job_blocks = list(job_map.values())
+    return job_blocks, totals
+
+
 def materials_report_to_pdf_bytes(materials):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter)
@@ -2552,6 +2728,64 @@ def print_reports():
         mimetype="application/pdf",
         as_attachment=True,
         download_name=pdf_path.name,
+    )
+
+
+@app.get("/reports/daily-print")
+def print_daily_report():
+    db = get_db()
+    report_date = app_now().date()
+    report_date_str = report_date.isoformat()
+
+    job_blocks, totals = build_daily_report_data(db, report_date_str)
+
+    pdf_bytes = daily_report_to_pdf_bytes(
+        job_blocks=job_blocks,
+        report_date=report_date,
+        totals=totals,
+    )
+
+    stamp = app_now().strftime("%Y%m%d_%H%M%S")
+    report_filename = f"daily_report_{report_date.strftime('%Y%m%d')}_{stamp}.pdf"
+
+    if AZURE_STORAGE_CONNECTION_STRING:
+        blob_name = f"{AZURE_REPORTS_BLOB_PREFIX}/{report_filename}" if AZURE_REPORTS_BLOB_PREFIX else report_filename
+        try:
+            upload_pdf_to_blob(blob_name, pdf_bytes)
+        except Exception as exc:
+            app.logger.warning("Azure Blob upload failed for daily report %s: %s", report_filename, exc)
+
+    try:
+        upload_download_audit_blob(
+            category="reports_pdf_daily",
+            filename=report_filename,
+            file_bytes=pdf_bytes,
+            mimetype="application/pdf",
+        )
+    except Exception as exc:
+        app.logger.warning("Could not audit-upload daily report PDF download: %s", exc)
+
+    return send_file(
+        io.BytesIO(pdf_bytes),
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=report_filename,
+    )
+
+
+@app.get("/reports/daily")
+def daily_report_dashboard():
+    db = get_db()
+    report_date = app_now().date()
+    report_date_str = report_date.isoformat()
+
+    job_blocks, totals = build_daily_report_data(db, report_date_str)
+
+    return render_template(
+        "daily_report.html",
+        report_date=report_date.strftime("%m/%d/%Y"),
+        job_blocks=job_blocks,
+        totals=totals,
     )
 
 @app.get("/tickets/<int:ticket_id>/pdf")

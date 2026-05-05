@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card daily-toolbar">
+    <h2>Daily Dispatch Dashboard</h2>
+    <p class="daily-date">Date: {{ report_date }}</p>
+    <div class="actions">
+        <button type="button" onclick="window.print()">Print</button>
+        <a href="{{ url_for('print_daily_report') }}" target="_blank" rel="noopener">Download PDF</a>
+        <a href="{{ url_for('reports') }}">Back to Reports</a>
+    </div>
+</section>
+
+<section class="card daily-board-card">
+    <div class="daily-board-grid">
+        {% for job in job_blocks %}
+            <article class="daily-job-card">
+                <header class="daily-job-header">
+                    {% if job.job_code and job.job_name %}
+                        {{ job.job_code }} - {{ job.job_name }}
+                    {% elif job.job_code %}
+                        {{ job.job_code }}
+                    {% elif job.job_name %}
+                        {{ job.job_name }}
+                    {% else %}
+                        Unassigned Job
+                    {% endif %}
+                </header>
+                <ul class="daily-truck-list">
+                    {% if job.trucks %}
+                        {% for tr in job.trucks %}
+                            <li>
+                                <span>{{ tr.truck }}</span>
+                                {% if tr.loads > 1 %}
+                                    <span class="daily-badge">{{ tr.loads }}</span>
+                                {% endif %}
+                            </li>
+                        {% endfor %}
+                    {% else %}
+                        <li class="daily-empty">No trucks</li>
+                    {% endif %}
+                </ul>
+            </article>
+        {% else %}
+            <p class="daily-empty-page">No active tickets found for today.</p>
+        {% endfor %}
+    </div>
+</section>
+
+<section class="card daily-summary-card">
+    <div class="daily-summary-grid">
+        <div><strong>Total Trucks:</strong> {{ totals.total_trucks or 0 }}</div>
+        <div><strong>Total Loads In:</strong> {{ totals.loads_in or 0 }}</div>
+        <div><strong>Total Loads Out:</strong> {{ totals.loads_out or 0 }}</div>
+        <div><strong>Total Loads:</strong> {{ totals.total_loads or 0 }}</div>
+    </div>
+</section>
+{% endblock %}

@@ -144,6 +144,25 @@ td {
     align-items: center;
 }
 
+.report-actions {
+    flex-wrap: wrap;
+}
+
+.report-daily-cta {
+    margin-left: auto;
+    text-decoration: none;
+    background: #ea580c;
+    color: #fff;
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-weight: 700;
+    box-shadow: 0 2px 6px rgba(234, 88, 12, 0.35);
+}
+
+.report-daily-cta:hover {
+    background: #c2410c;
+}
+
 .actions-column {
     flex-direction: column;
     align-items: stretch;
@@ -305,5 +324,135 @@ td {
     .brand-address,
     .brand-phone {
         font-size: 11px;
+    }
+}
+
+.daily-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.daily-toolbar h2 {
+    margin: 0;
+}
+
+.daily-date {
+    margin: 0;
+    color: #334155;
+    font-weight: 600;
+}
+
+.daily-board-card {
+    padding: 10px;
+}
+
+.daily-board-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.daily-job-card {
+    border: 1px solid #111827;
+    min-height: 170px;
+    background: #fff;
+}
+
+.daily-job-header {
+    padding: 6px 8px;
+    font-size: 12px;
+    font-weight: 700;
+    border-bottom: 1px solid #111827;
+    background: #7dd3fc;
+}
+
+.daily-job-card:nth-child(4n+2) .daily-job-header {
+    background: #86efac;
+}
+
+.daily-job-card:nth-child(4n+3) .daily-job-header {
+    background: #fde68a;
+}
+
+.daily-job-card:nth-child(4n+4) .daily-job-header {
+    background: #f9a8d4;
+}
+
+.daily-truck-list {
+    margin: 0;
+    padding: 8px 10px 10px 22px;
+}
+
+.daily-truck-list li {
+    margin: 0 0 6px;
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.daily-badge {
+    background: #e2e8f0;
+    border-radius: 999px;
+    padding: 1px 7px;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.daily-empty,
+.daily-empty-page {
+    color: #64748b;
+    font-style: italic;
+}
+
+.daily-empty-page {
+    padding: 10px;
+}
+
+.daily-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(180px, 1fr));
+    gap: 8px;
+}
+
+@media (max-width: 900px) {
+    .daily-board-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 640px) {
+    .daily-board-grid,
+    .daily-summary-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media print {
+    .topbar,
+    .flash,
+    .daily-toolbar .actions,
+    .daily-toolbar .actions + a {
+        display: none !important;
+    }
+
+    body {
+        background: #fff;
+    }
+
+    .container {
+        max-width: none;
+        margin: 0;
+        padding: 0;
+    }
+
+    .card {
+        box-shadow: none;
+        border: 1px solid #000;
+        border-radius: 0;
+        margin: 0 0 8px;
+        page-break-inside: avoid;
     }
 }
