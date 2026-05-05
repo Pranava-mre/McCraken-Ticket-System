@@ -1173,7 +1173,16 @@ def build_daily_report_data(db, report_date_str):
                 "loads": load_count,
             })
 
-    job_blocks = list(job_map.values())
+    job_blocks = sorted(
+        job_map.values(),
+        key=lambda b: (
+            -len(b.get("trucks") or []),
+            -sum(int(t.get("loads") or 0) for t in (b.get("trucks") or [])),
+            str(b.get("job_code") or ""),
+            str(b.get("job_name") or ""),
+            str(b.get("customer") or ""),
+        ),
+    )
     return job_blocks, totals
 
 
