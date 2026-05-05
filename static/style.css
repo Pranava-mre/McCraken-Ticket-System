@@ -369,6 +369,17 @@ td {
     background: #7dd3fc;
 }
 
+.daily-job-title {
+    font-weight: 700;
+}
+
+.daily-job-customer {
+    font-size: 11px;
+    font-weight: 500;
+    margin-top: 2px;
+    color: #0f172a;
+}
+
 .daily-job-card:nth-child(4n+2) .daily-job-header {
     background: #86efac;
 }

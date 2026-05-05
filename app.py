@@ -944,7 +944,7 @@ def daily_report_to_pdf_bytes(job_blocks, report_date, totals):
     rows = 6
     cell_w = (right - left) / cols
     cell_h = (top - grid_bottom) / rows
-    header_h = 15
+    header_h = 24
 
     header_colors = [
         colors.HexColor("#7dd3fc"),
@@ -962,80 +962,148 @@ def daily_report_to_pdf_bytes(job_blocks, report_date, totals):
             value = value[:-1]
         return (value + suffix) if value else suffix
 
-    pdf.setFont("Helvetica-Bold", 12)
-    pdf.drawCentredString(width / 2, height - 16, "Daily Dispatch Report")
+    # Keep every truck visible by splitting large jobs across continuation boxes/pages.
+    line_height = 12
+    text_start_offset = header_h + 12
+    text_bottom_padding = 7
+    trucks_per_box = max(1, int((cell_h - text_start_offset - text_bottom_padding) // line_height) + 1)
 
-    max_blocks = cols * rows
-    for idx in range(max_blocks):
-        col = idx % cols
-        row = idx // cols
-
-        x = left + (col * cell_w)
-        y_top = top - (row * cell_h)
-        y_bottom = y_top - cell_h
-
-        pdf.setLineWidth(1)
-        pdf.setStrokeColor(colors.black)
-        pdf.rect(x, y_bottom, cell_w, cell_h)
-
-        if idx >= len(job_blocks):
+    expanded_blocks = []
+    for block in job_blocks:
+        trucks = list(block.get("trucks") or [])
+        if not trucks:
+            expanded_blocks.append(
+                {
+                    "job_code": block.get("job_code", ""),
+                    "job_name": block.get("job_name", ""),
+                    "customer": block.get("customer", ""),
+                    "trucks": [],
+                    "continued": False,
+                    "has_more": False,
+                }
+            )
             continue
 
-        block = job_blocks[idx]
-        color = header_colors[idx % len(header_colors)]
+        for start in range(0, len(trucks), trucks_per_box):
+            segment = trucks[start:start + trucks_per_box]
+            expanded_blocks.append(
+                {
+                    "job_code": block.get("job_code", ""),
+                    "job_name": block.get("job_name", ""),
+                    "customer": block.get("customer", ""),
+                    "trucks": segment,
+                    "continued": start > 0,
+                    "has_more": (start + trucks_per_box) < len(trucks),
+                }
+            )
 
-        pdf.setFillColor(color)
-        pdf.rect(x + 1, y_top - header_h - 1, cell_w - 2, header_h, stroke=0, fill=1)
-        pdf.setFillColor(colors.black)
+    if not expanded_blocks:
+        expanded_blocks = [
+            {
+                "job_code": "",
+                "job_name": "",
+                "customer": "",
+                "trucks": [],
+                "continued": False,
+                "has_more": False,
+            }
+        ]
 
-        job_code = str(block.get("job_code") or "").strip()
-        job_name = str(block.get("job_name") or "").strip()
-        if job_code and job_name:
-            header_text = f"{job_code} - {job_name}"
-        elif job_code:
-            header_text = job_code
-        elif job_name:
-            header_text = job_name
-        else:
-            header_text = "Unassigned Job"
+    max_blocks = cols * rows
+    total_pages = (len(expanded_blocks) + max_blocks - 1) // max_blocks
 
-        pdf.setFont("Helvetica-Bold", 10)
-        header_text = clip_text(header_text, "Helvetica-Bold", 10, cell_w - 8)
-        pdf.drawString(x + 4, y_top - 11, header_text)
+    for page_idx in range(total_pages):
+        page_start = page_idx * max_blocks
+        page_blocks = expanded_blocks[page_start:page_start + max_blocks]
 
-        y_text = y_top - header_h - 12
-        pdf.setFont("Helvetica", 10)
-        for truck_row in block.get("trucks", []):
-            if y_text < y_bottom + 7:
-                break
-            truck_name = str(truck_row.get("truck") or "").strip() or "Unknown Truck"
-            loads = int(truck_row.get("loads") or 0)
-            if loads > 1:
-                line = f"- {truck_name} ({loads})"
-            else:
-                line = f"- {truck_name}"
-            line = clip_text(line, "Helvetica", 10, cell_w - 10)
-            pdf.drawString(x + 4, y_text, line)
-            y_text -= 12
-
-    date_text = report_date.strftime("%m/%d/%y")
-    pdf.setFont("Helvetica-Bold", 20)
-    pdf.drawRightString(right - 8, grid_bottom - 12, date_text)
-
-    stats_x = left + (2 * cell_w) + 6
-    stats_y = 66
-    pdf.setFont("Helvetica-Bold", 10)
-    pdf.drawString(stats_x, stats_y, f"TOTAL TRUCKS: {int(totals.get('total_trucks') or 0)}")
-    pdf.drawString(stats_x, stats_y - 16, f"TOTAL LOADS IN: {int(totals.get('loads_in') or 0)}")
-    pdf.drawString(stats_x, stats_y - 32, f"TOTAL LOADS OUT: {int(totals.get('loads_out') or 0)}")
-    pdf.drawString(stats_x, stats_y - 54, f"TOTAL LOADS: {int(totals.get('total_loads') or 0)}")
-
-    if len(job_blocks) > max_blocks:
-        overflow = len(job_blocks) - max_blocks
+        pdf.setFont("Helvetica-Bold", 12)
+        pdf.drawCentredString(width / 2, height - 16, "Daily Dispatch Report")
         pdf.setFont("Helvetica", 9)
-        pdf.drawString(left + 6, 44, f"Additional jobs not shown on this page: {overflow}")
+        pdf.drawRightString(right, height - 16, f"Page {page_idx + 1}/{total_pages}")
 
-    pdf.showPage()
+        for idx in range(max_blocks):
+            col = idx % cols
+            row = idx // cols
+
+            x = left + (col * cell_w)
+            y_top = top - (row * cell_h)
+            y_bottom = y_top - cell_h
+
+            pdf.setLineWidth(1)
+            pdf.setStrokeColor(colors.black)
+            pdf.rect(x, y_bottom, cell_w, cell_h)
+
+            if idx >= len(page_blocks):
+                continue
+
+            block = page_blocks[idx]
+            color = header_colors[(page_start + idx) % len(header_colors)]
+
+            pdf.setFillColor(color)
+            pdf.rect(x + 1, y_top - header_h - 1, cell_w - 2, header_h, stroke=0, fill=1)
+            pdf.setFillColor(colors.black)
+
+            job_code = str(block.get("job_code") or "").strip()
+            job_name = str(block.get("job_name") or "").strip()
+            customer = str(block.get("customer") or "").strip()
+            if job_code and job_name:
+                header_text = f"{job_code} - {job_name}"
+            elif job_code:
+                header_text = job_code
+            elif job_name:
+                header_text = job_name
+            else:
+                header_text = "Unassigned Job"
+
+            if block.get("continued"):
+                header_text = f"{header_text} (cont.)"
+
+            pdf.setFont("Helvetica-Bold", 10)
+            header_text = clip_text(header_text, "Helvetica-Bold", 10, cell_w - 8)
+            pdf.drawString(x + 4, y_top - 11, header_text)
+
+            if customer:
+                pdf.setFont("Helvetica", 8)
+                customer_text = clip_text(customer, "Helvetica", 8, cell_w - 8)
+                pdf.drawString(x + 4, y_top - 20, customer_text)
+
+            y_text = y_top - text_start_offset
+            pdf.setFont("Helvetica", 10)
+
+            if not block.get("trucks"):
+                pdf.drawString(x + 4, y_text, "- No trucks")
+            else:
+                for truck_row in block.get("trucks", []):
+                    if y_text < y_bottom + text_bottom_padding:
+                        break
+                    truck_name = str(truck_row.get("truck") or "").strip() or "Unknown Truck"
+                    loads = int(truck_row.get("loads") or 0)
+                    if loads > 1:
+                        line = f"- {truck_name} ({loads})"
+                    else:
+                        line = f"- {truck_name}"
+                    line = clip_text(line, "Helvetica", 10, cell_w - 10)
+                    pdf.drawString(x + 4, y_text, line)
+                    y_text -= line_height
+
+                if block.get("has_more") and y_text >= y_bottom + text_bottom_padding:
+                    pdf.setFont("Helvetica-Oblique", 8)
+                    pdf.drawString(x + 4, y_bottom + 4, "continues...")
+
+        date_text = report_date.strftime("%m/%d/%y")
+        pdf.setFont("Helvetica-Bold", 20)
+        pdf.drawRightString(right - 8, grid_bottom - 12, date_text)
+
+        stats_x = left + (2 * cell_w) + 6
+        stats_y = 66
+        pdf.setFont("Helvetica-Bold", 10)
+        pdf.drawString(stats_x, stats_y, f"TOTAL TRUCKS: {int(totals.get('total_trucks') or 0)}")
+        pdf.drawString(stats_x, stats_y - 16, f"TOTAL LOADS IN: {int(totals.get('loads_in') or 0)}")
+        pdf.drawString(stats_x, stats_y - 32, f"TOTAL LOADS OUT: {int(totals.get('loads_out') or 0)}")
+        pdf.drawString(stats_x, stats_y - 54, f"TOTAL LOADS: {int(totals.get('total_loads') or 0)}")
+
+        pdf.showPage()
+
     pdf.save()
     buffer.seek(0)
     return buffer.read()
@@ -1048,13 +1116,14 @@ def build_daily_report_data(db, report_date_str):
             SELECT
                 COALESCE(NULLIF(TRIM(t.job_code_snapshot), ''), '') AS job_code,
                 COALESCE(NULLIF(TRIM(t.job_name_snapshot), ''), '') AS job_name,
+                                COALESCE(NULLIF(TRIM(t.customer_snapshot), ''), '') AS customer,
                 COALESCE(NULLIF(TRIM(t.truck_number_snapshot), ''), '') AS truck_number,
                 COUNT(*) AS load_count
             FROM tickets t
             WHERE COALESCE(t.active, TRUE) = TRUE
               AND date(t.created_at) = date(%s)
-            GROUP BY 1, 2, 3
-            ORDER BY 1, 2, 3
+                        GROUP BY 1, 2, 3, 4
+                        ORDER BY 1, 2, 3, 4
             """,
             (report_date_str,),
         )
@@ -1085,14 +1154,16 @@ def build_daily_report_data(db, report_date_str):
     for row in grouped_rows:
         job_code = str(row.get("job_code") or "").strip()
         job_name = str(row.get("job_name") or "").strip()
+        customer = str(row.get("customer") or "").strip()
         truck_number = str(row.get("truck_number") or "").strip()
         load_count = int(row.get("load_count") or 0)
 
-        key = (job_code, job_name)
+        key = (job_code, job_name, customer)
         if key not in job_map:
             job_map[key] = {
                 "job_code": job_code,
                 "job_name": job_name,
+                "customer": customer,
                 "trucks": [],
             }
 
