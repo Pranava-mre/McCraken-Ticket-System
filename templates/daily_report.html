@@ -4,7 +4,7 @@
     <h2>Daily Dispatch Dashboard</h2>
     <p class="daily-date">Date: {{ report_date }}</p>
     <div class="actions">
-        <button type="button" onclick="window.print()">Print</button>
+        <!-- <button type="button" onclick="window.print()">Print</button> -->
         <a href="{{ url_for('print_daily_report') }}" target="_blank" rel="noopener">Download PDF</a>
         <a href="{{ url_for('reports') }}">Back to Reports</a>
     </div>
