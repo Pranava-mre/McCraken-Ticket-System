@@ -2024,6 +2024,11 @@ def edit_tickets():
     material = request.args.get("material", "").strip()
     date_from = request.args.get("date_from", "").strip()
     date_to = request.args.get("date_to", "").strip()
+    edit_id_raw = request.args.get("edit_id", "").strip()
+
+    edit_id = None
+    if edit_id_raw.isdigit():
+        edit_id = int(edit_id_raw)
 
     # Default edit view to today's tickets when no explicit date range is provided.
     if not date_from and not date_to:
@@ -2077,6 +2082,45 @@ def edit_tickets():
     with db.cursor() as cursor:
         cursor.execute(query, tuple(params))
         tickets = cursor.fetchall()
+
+    selected_ticket = None
+    if edit_id is not None:
+        selected_ticket = next((t for t in tickets if t.get("id") == edit_id), None)
+        if not selected_ticket:
+            with db.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        id,
+                        ticket_number,
+                        created_at,
+                        direction,
+                        job_id,
+                        job_code_snapshot,
+                        job_name_snapshot,
+                        tax_exempt,
+                        customer_snapshot,
+                        truck_id,
+                        truck_number_snapshot,
+                        material_id,
+                        material_name_snapshot,
+                        quantity,
+                        unit,
+                        cost,
+                        notes
+                    FROM tickets
+                    WHERE id = %s AND COALESCE(active, TRUE) = TRUE
+                    """,
+                    (edit_id,),
+                )
+                selected_ticket = cursor.fetchone()
+
+    jobs = []
+    customers = []
+    trucks = []
+    materials = []
+
+    if selected_ticket:
         jobs = list_ticket_jobs(db)
         customers = list_customers(db)
         trucks = list_trucks(db)
@@ -2094,22 +2138,22 @@ def edit_tickets():
             for row in cursor.fetchall():
                 cache_lookup[(str(row["job_code"] or "").strip(), str(row["job_name"] or "").strip())] = row["id"]
 
-    for t in tickets:
-        t["created_at_input"] = to_datetime_local_value(t.get("created_at"))
-        job_code = str(t.get("job_code_snapshot") or "").strip()
-        job_name = str(t.get("job_name_snapshot") or "").strip()
-        if t.get("job_id"):
-            t["job_selected"] = f"cache:{t['job_id']}"
+        selected_ticket["created_at_input"] = to_datetime_local_value(selected_ticket.get("created_at"))
+        job_code = str(selected_ticket.get("job_code_snapshot") or "").strip()
+        job_name = str(selected_ticket.get("job_name_snapshot") or "").strip()
+        if selected_ticket.get("job_id"):
+            selected_ticket["job_selected"] = f"cache:{selected_ticket['job_id']}"
         elif (job_code, job_name) in manual_lookup:
-            t["job_selected"] = f"manual:{manual_lookup[(job_code, job_name)]}"
+            selected_ticket["job_selected"] = f"manual:{manual_lookup[(job_code, job_name)]}"
         elif (job_code, job_name) in cache_lookup:
-            t["job_selected"] = f"cache:{cache_lookup[(job_code, job_name)]}"
+            selected_ticket["job_selected"] = f"cache:{cache_lookup[(job_code, job_name)]}"
         else:
-            t["job_selected"] = ""
+            selected_ticket["job_selected"] = ""
 
     return render_template(
         "tickets_edit.html",
         tickets=tickets,
+        selected_ticket=selected_ticket,
         jobs=jobs,
         customers=customers,
         trucks=trucks,
@@ -2120,6 +2164,7 @@ def edit_tickets():
         material=material,
         date_from=date_from,
         date_to=date_to,
+        edit_id=edit_id,
     )
 
 
@@ -2127,24 +2172,24 @@ def edit_tickets():
 def save_ticket_edit(ticket_id):
     db = get_db()
 
-    admin_password = request.form.get("admin_password", "")
-    password_ok, password_message = validate_ticket_edit_password(admin_password)
-    if not password_ok:
-        flash(f"{password_message} Ticket was not updated.", "error")
-        return redirect(url_for("edit_tickets"))
-
-    filter_keys = ["ticket_number", "truck", "job", "material", "date_from", "date_to"]
+    filter_keys = ["ticket_number", "truck", "job", "material", "date_from", "date_to", "edit_id"]
     filter_args = {}
     for key in filter_keys:
         value = request.form.get(key, "").strip()
         if value:
             filter_args[key] = value
 
+    admin_password = request.form.get("admin_password", "")
+    password_ok, password_message = validate_ticket_edit_password(admin_password)
+    if not password_ok:
+        flash(f"{password_message} Ticket was not updated.", "error")
+        return redirect(url_for("edit_tickets", **filter_args))
+
     try:
         with db.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT id
+                SELECT id, ticket_number
                 FROM tickets
                 WHERE id = %s AND COALESCE(active, TRUE) = TRUE
                 """,
@@ -2238,8 +2283,12 @@ def save_ticket_edit(ticket_id):
             flash("Quantity and cost must be numeric.", "error")
             return redirect(url_for("edit_tickets", **filter_args))
 
-        ticket_number, ticket_year, seq = next_ticket_number(db)
-        new_ticket_row = {
+        ticket_number = str(old_row.get("ticket_number") or "").strip()
+        if not ticket_number:
+            flash("Ticket number is missing on this record.", "error")
+            return redirect(url_for("edit_tickets", **filter_args))
+
+        updated_ticket_row = {
             "ticket_number": ticket_number,
             "created_at": created_at,
             "direction": direction,
@@ -2255,24 +2304,36 @@ def save_ticket_edit(ticket_id):
             "notes": notes,
         }
 
-        pdf_bytes = to_pdf_bytes(new_ticket_row)
+        pdf_bytes = to_pdf_bytes(updated_ticket_row)
         pdf_path = save_pdf(ticket_number, pdf_bytes)
 
         with db.cursor() as cursor:
             cursor.execute(
                 """
-                INSERT INTO tickets (
-                    ticket_number, ticket_year, ticket_sequence, direction, created_at,
-                    job_id, job_code_snapshot, job_name_snapshot, tax_exempt, customer_snapshot,
-                    truck_id, truck_number_snapshot, material_id, material_name_snapshot,
-                    quantity, unit, cost, notes, active, modified_to_id, pdf_path, pdf_blob
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE, NULL, %s, %s)
-                RETURNING id
+                UPDATE tickets
+                SET
+                    direction = %s,
+                    created_at = %s,
+                    job_id = %s,
+                    job_code_snapshot = %s,
+                    job_name_snapshot = %s,
+                    tax_exempt = %s,
+                    customer_snapshot = %s,
+                    truck_id = %s,
+                    truck_number_snapshot = %s,
+                    material_id = %s,
+                    material_name_snapshot = %s,
+                    quantity = %s,
+                    unit = %s,
+                    cost = %s,
+                    notes = %s,
+                    active = TRUE,
+                    modified_to_id = NULL,
+                    pdf_path = %s,
+                    pdf_blob = %s
+                WHERE id = %s
                 """,
                 (
-                    ticket_number,
-                    ticket_year,
-                    seq,
                     direction,
                     created_at,
                     job_id_value,
@@ -2290,22 +2351,12 @@ def save_ticket_edit(ticket_id):
                     notes,
                     pdf_path,
                     pdf_bytes,
+                    ticket_id,
                 ),
-            )
-            inserted = cursor.fetchone()
-            new_ticket_id = inserted["id"]
-
-            cursor.execute(
-                """
-                UPDATE tickets
-                SET active = FALSE, modified_to_id = %s
-                WHERE id = %s AND COALESCE(active, TRUE) = TRUE
-                """,
-                (new_ticket_id, ticket_id),
             )
 
         db.commit()
-        flash(f"Ticket updated. New ticket {ticket_number} created.", "success")
+        flash(f"Ticket {ticket_number} updated.", "success")
     except Exception as exc:
         db.rollback()
         flash(f"Could not update ticket: {exc}", "error")
@@ -2317,18 +2368,18 @@ def save_ticket_edit(ticket_id):
 def void_ticket_from_edit(ticket_id):
     db = get_db()
 
-    admin_password = request.form.get("admin_password", "")
-    password_ok, password_message = validate_ticket_edit_password(admin_password)
-    if not password_ok:
-        flash(f"{password_message} Ticket was not voided.", "error")
-        return redirect(url_for("edit_tickets"))
-
-    filter_keys = ["ticket_number", "truck", "job", "material", "date_from", "date_to"]
+    filter_keys = ["ticket_number", "truck", "job", "material", "date_from", "date_to", "edit_id"]
     filter_args = {}
     for key in filter_keys:
         value = request.form.get(key, "").strip()
         if value:
             filter_args[key] = value
+
+    admin_password = request.form.get("admin_password", "")
+    password_ok, password_message = validate_ticket_edit_password(admin_password)
+    if not password_ok:
+        flash(f"{password_message} Ticket was not voided.", "error")
+        return redirect(url_for("edit_tickets", **filter_args))
 
     try:
         with db.cursor() as cursor:
