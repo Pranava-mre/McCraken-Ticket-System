@@ -1110,25 +1110,16 @@ def daily_report_to_pdf_bytes(job_blocks, report_date, totals):
 
 
 def build_daily_report_data(db, report_date_str):
-    customer_palette = [
-        "#7dd3fc",
-        "#86efac",
-        "#fde68a",
-        "#f9a8d4",
-        "#fdba74",
-        "#c4b5fd",
-        "#99f6e4",
-        "#bef264",
-    ]
-
     def customer_to_color(customer_name):
         value = str(customer_name or "").strip().lower()
-        if not value:
-            return "#7dd3fc"
-        score = 0
-        for idx, ch in enumerate(value):
-            score += (idx + 1) * ord(ch)
-        return customer_palette[score % len(customer_palette)]
+        normalized = re.sub(r"[^a-z0-9]+", " ", value)
+
+        # Same customer family should always map to same color.
+        if "mrex" in value or "mr ex" in normalized:
+            return "#7dd3fc"  # Blue
+        if "petty" in value or "redcon" in value:
+            return "#86efac"  # Green
+        return "#fde68a"  # Yellow
 
     with db.cursor() as cursor:
         cursor.execute(
