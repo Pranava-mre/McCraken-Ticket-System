@@ -400,18 +400,6 @@ td {
     color: #0f172a;
 }
 
-.daily-job-card:nth-child(4n+2) .daily-job-header {
-    background: #86efac;
-}
-
-.daily-job-card:nth-child(4n+3) .daily-job-header {
-    background: #fde68a;
-}
-
-.daily-job-card:nth-child(4n+4) .daily-job-header {
-    background: #f9a8d4;
-}
-
 .daily-truck-list {
     margin: 0;
     padding: 8px 10px 10px 22px;

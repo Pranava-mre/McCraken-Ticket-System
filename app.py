@@ -1110,6 +1110,26 @@ def daily_report_to_pdf_bytes(job_blocks, report_date, totals):
 
 
 def build_daily_report_data(db, report_date_str):
+    customer_palette = [
+        "#7dd3fc",
+        "#86efac",
+        "#fde68a",
+        "#f9a8d4",
+        "#fdba74",
+        "#c4b5fd",
+        "#99f6e4",
+        "#bef264",
+    ]
+
+    def customer_to_color(customer_name):
+        value = str(customer_name or "").strip().lower()
+        if not value:
+            return "#7dd3fc"
+        score = 0
+        for idx, ch in enumerate(value):
+            score += (idx + 1) * ord(ch)
+        return customer_palette[score % len(customer_palette)]
+
     with db.cursor() as cursor:
         cursor.execute(
             """
@@ -1164,6 +1184,7 @@ def build_daily_report_data(db, report_date_str):
                 "job_code": job_code,
                 "job_name": job_name,
                 "customer": customer,
+                "customer_color": customer_to_color(customer),
                 "trucks": [],
             }
 
@@ -1911,8 +1932,9 @@ def new_ticket():
 
         if auto_print:
             if created_ticket_id is not None:
-                # Browser handles printing on the user's device and default printer.
-                return redirect(url_for("ticket_pdf", ticket_id=created_ticket_id, inline=1))
+                # Use an intermediate print page: kiosk mode can print silently;
+                # otherwise the user still gets a manual PDF fallback link.
+                return redirect(url_for("ticket_auto_print", ticket_id=created_ticket_id))
             flash("Ticket saved, but PDF preview could not be opened automatically.", "error")
             return redirect(url_for("new_ticket"))
 
@@ -1944,6 +1966,107 @@ def get_materials():
             {"id": m["id"], "name": m["material_name"]}
             for m in materials
         ]
+    }
+
+
+@app.get("/tickets/prefill/latest")
+def get_latest_ticket_prefill():
+    db = get_db()
+    truck_id_raw = request.args.get("truck_id", "").strip()
+    truck_entry = request.args.get("truck_entry", "").strip()
+    for_date_raw = request.args.get("for_date", "").strip()
+
+    target_date = app_now().date()
+    if for_date_raw:
+        try:
+            target_date = datetime.fromisoformat(for_date_raw).date()
+        except ValueError:
+            pass
+
+    use_truck_id = truck_id_raw.isdigit()
+    if not use_truck_id and not truck_entry:
+        return {"found": False}
+
+    query = """
+        SELECT
+            id,
+            direction,
+            job_id,
+            job_code_snapshot,
+            job_name_snapshot,
+            customer_snapshot,
+            material_id,
+            material_name_snapshot,
+            quantity,
+            unit,
+            notes
+        FROM tickets
+        WHERE COALESCE(active, TRUE) = TRUE
+          AND date(created_at) = date(%s)
+    """
+    params = [target_date.isoformat()]
+
+    if use_truck_id:
+        query += " AND truck_id = %s"
+        params.append(int(truck_id_raw))
+    else:
+        query += " AND truck_number_snapshot = %s"
+        params.append(truck_entry)
+
+    query += " ORDER BY created_at DESC, id DESC LIMIT 1"
+
+    with db.cursor() as cursor:
+        cursor.execute(query, tuple(params))
+        row = cursor.fetchone()
+
+    if not row:
+        return {"found": False}
+
+    customer_name = str(row.get("customer_snapshot") or "").strip()
+    customer_id = None
+    if customer_name:
+        customer = get_customer_by_name(db, customer_name)
+        if customer:
+            customer_id = customer.get("id")
+
+    job_code = str(row.get("job_code_snapshot") or "").strip()
+    job_name = str(row.get("job_name_snapshot") or "").strip()
+    job_entry = f"{job_code} - {job_name}" if job_code and job_name else (job_code or job_name)
+
+    job_selected_key = ""
+    if row.get("job_id"):
+        job_selected_key = f"cache:{row['job_id']}"
+    elif job_code or job_name:
+        with db.cursor() as cursor:
+            cursor.execute(
+                "SELECT id FROM manual_jobs WHERE job_code = %s AND job_name = %s LIMIT 1",
+                (job_code, job_name),
+            )
+            manual_row = cursor.fetchone()
+        if manual_row:
+            job_selected_key = f"manual:{manual_row['id']}"
+        else:
+            with db.cursor() as cursor:
+                cursor.execute(
+                    "SELECT id FROM jobs_cache WHERE job_code = %s AND job_name = %s LIMIT 1",
+                    (job_code, job_name),
+                )
+                cache_row = cursor.fetchone()
+            if cache_row:
+                job_selected_key = f"cache:{cache_row['id']}"
+
+    return {
+        "found": True,
+        "direction": str(row.get("direction") or "").strip().upper(),
+        "job_entry": job_entry,
+        "job_selected_key": job_selected_key,
+        "customer_name": customer_name,
+        "customer_id": customer_id,
+        "material_name": str(row.get("material_name_snapshot") or "").strip(),
+        "material_id": row.get("material_id"),
+        "quantity": row.get("quantity"),
+        "unit": str(row.get("unit") or "").strip(),
+        "notes": str(row.get("notes") or ""),
     }
 
 @app.post("/jobs/refresh")
@@ -2976,6 +3099,25 @@ def ticket_pdf(ticket_id):
 
     flash("No PDF exists for this ticket yet. Use Generate PDF.", "error")
     return redirect(url_for("search_tickets", ticket_number=row["ticket_number"]))
+
+
+@app.get("/tickets/<int:ticket_id>/auto-print")
+def ticket_auto_print(ticket_id):
+    db = get_db()
+    with db.cursor() as cursor:
+        cursor.execute("SELECT ticket_number FROM tickets WHERE id = %s", (ticket_id,))
+        row = cursor.fetchone()
+
+    if not row:
+        flash("Ticket not found.", "error")
+        return redirect(url_for("new_ticket"))
+
+    return render_template(
+        "ticket_auto_print.html",
+        ticket_id=ticket_id,
+        ticket_number=row["ticket_number"],
+        pdf_url=url_for("ticket_pdf", ticket_id=ticket_id, inline=1),
+    )
 
 
 @app.post("/tickets/<int:ticket_id>/print")

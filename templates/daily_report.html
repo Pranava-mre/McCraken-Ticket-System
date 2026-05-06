@@ -20,7 +20,7 @@
     <div class="daily-board-grid">
         {% for job in job_blocks %}
             <article class="daily-job-card">
-                <header class="daily-job-header">
+                <header class="daily-job-header" style="background: {{ job.customer_color or '#7dd3fc' }};">
                     <div class="daily-job-title">
                         {% if job.job_code and job.job_name %}
                             {{ job.job_code }} - {{ job.job_name }}

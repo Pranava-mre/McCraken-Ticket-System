@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+    <h2>Printing Ticket {{ ticket_number }}</h2>
+    <p id="print_status">Preparing print preview...</p>
+
+    <div class="actions" style="margin-bottom: 10px;">
+        <a href="{{ pdf_url }}" target="_blank" rel="noopener">Open PDF Manually</a>
+        <a href="{{ url_for('new_ticket') }}" target="_self">Back to New Ticket</a>
+    </div>
+
+    <div class="table-wrap" style="border: 1px solid #e5e7eb; height: 70vh;">
+        <iframe
+            id="ticket_print_frame"
+            src="{{ pdf_url }}"
+            title="Ticket PDF"
+            style="width: 100%; height: 100%; border: 0;"
+        ></iframe>
+    </div>
+</section>
+
+<script>
+    (function () {
+        const statusEl = document.getElementById("print_status");
+        const frame = document.getElementById("ticket_print_frame");
+        let printTriggered = false;
+
+        function updateStatus(text) {
+            if (statusEl) statusEl.textContent = text;
+        }
+
+        function attemptPrint() {
+            if (printTriggered) return;
+            printTriggered = true;
+            updateStatus("Attempting automatic print... If no print starts, use 'Open PDF Manually'.");
+
+            // Kiosk browsers can silently honor this; standard browsers may still show dialogs.
+            try {
+                if (frame && frame.contentWindow) {
+                    frame.contentWindow.focus();
+                    frame.contentWindow.print();
+                    return;
+                }
+            } catch (e) {
+                // Continue to fallback below.
+            }
+
+            try {
+                window.focus();
+                window.print();
+            } catch (e) {
+                updateStatus("Automatic print not available on this browser. Use 'Open PDF Manually'.");
+            }
+        }
+
+        if (frame) {
+            frame.addEventListener("load", function () {
+                // Give browser PDF viewer a moment before printing.
+                setTimeout(attemptPrint, 500);
+            });
+        } else {
+            setTimeout(attemptPrint, 400);
+        }
+
+        window.addEventListener("afterprint", function () {
+            updateStatus("Print command sent. You can close this window or go back to New Ticket.");
+        });
+
+        // Safety fallback if iframe load is blocked/delayed.
+        setTimeout(function () {
+            if (!printTriggered) attemptPrint();
+        }, 1800);
+    })();
+</script>
+{% endblock %}

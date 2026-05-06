@@ -245,6 +245,138 @@
 
     const newTicketForm = document.getElementById("new_ticket_form");
     const autoPrintCheckbox = document.getElementById("auto_print");
+    const truckSearchInput = document.getElementById("truck_search");
+    const truckIdInput = document.getElementById("truck_id");
+    const customerSearchInput = document.getElementById("customer_search");
+    const customerIdInput = document.getElementById("customer_id");
+    const jobSearchInput = document.getElementById("job_search");
+    const jobIdInput = document.getElementById("job_id");
+    const quantityInput = document.querySelector('input[name="quantity"]');
+    const unitInput = document.querySelector('input[name="unit"]');
+    const notesInput = document.querySelector('textarea[name="notes"]');
+
+    let lastPrefillKey = "";
+
+    function syncDatalistField(inputEl, hiddenEl, datalistId, wantedText, wantedId) {
+        if (!inputEl || !hiddenEl) return;
+
+        const textValue = (wantedText || "").trim();
+        inputEl.value = textValue;
+        hiddenEl.value = wantedId ? String(wantedId).trim() : "";
+
+        if (!hiddenEl.value && textValue) {
+            const datalist = document.getElementById(datalistId);
+            if (datalist) {
+                for (const option of datalist.options) {
+                    if ((option.value || "").trim() === textValue) {
+                        hiddenEl.value = (option.dataset.id || "").trim();
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    function getPrefillDate() {
+        if (useNowCheckbox && !useNowCheckbox.checked && customDateInput && customDateInput.value) {
+            return customDateInput.value.slice(0, 10);
+        }
+        return "";
+    }
+
+    async function prefillFromLatestTruckTicket() {
+        if (!truckIdInput) return;
+
+        const truckId = (truckIdInput.value || "").trim();
+        if (!truckId) return;
+
+        const forDate = getPrefillDate();
+        const prefillKey = `${truckId}|${forDate}`;
+        if (prefillKey === lastPrefillKey) return;
+        lastPrefillKey = prefillKey;
+
+        const params = new URLSearchParams({ truck_id: truckId });
+        if (forDate) {
+            params.set("for_date", forDate);
+        }
+
+        try {
+            const res = await fetch(`/tickets/prefill/latest?${params.toString()}`);
+            if (!res.ok) return;
+            const data = await res.json();
+            if (!data || !data.found) return;
+
+            if (data.direction === "IN" || data.direction === "OUT") {
+                directionSelect.value = data.direction;
+                await loadMaterials(data.direction);
+            }
+
+            if (materialSelect) {
+                let selectedMaterialOption = null;
+                if (data.material_id) {
+                    selectedMaterialOption = Array.from(materialSelect.options).find(
+                        (opt) => (opt.dataset.id || "") === String(data.material_id)
+                    );
+                }
+                if (!selectedMaterialOption && data.material_name) {
+                    selectedMaterialOption = Array.from(materialSelect.options).find(
+                        (opt) => (opt.value || "") === data.material_name
+                    );
+                }
+
+                if (selectedMaterialOption) {
+                    materialSelect.value = selectedMaterialOption.value;
+                    materialIdInput.value = selectedMaterialOption.dataset.id || "";
+                }
+            }
+
+            syncDatalistField(
+                customerSearchInput,
+                customerIdInput,
+                "customers_list",
+                data.customer_name,
+                data.customer_id
+            );
+
+            syncDatalistField(
+                jobSearchInput,
+                jobIdInput,
+                "jobs_list",
+                data.job_entry,
+                data.job_selected_key
+            );
+
+            if (quantityInput && data.quantity !== null && data.quantity !== undefined) {
+                quantityInput.value = data.quantity;
+            }
+            if (unitInput && data.unit) {
+                unitInput.value = data.unit;
+            }
+            if (notesInput) {
+                notesInput.value = data.notes || "";
+            }
+        } catch (err) {
+            // Ignore prefill errors; manual entry remains available.
+        }
+    }
+
+    if (truckSearchInput) {
+        truckSearchInput.addEventListener("change", () => {
+            prefillFromLatestTruckTicket();
+        });
+    }
+
+    if (useNowCheckbox) {
+        useNowCheckbox.addEventListener("change", () => {
+            lastPrefillKey = "";
+        });
+    }
+
+    if (customDateInput) {
+        customDateInput.addEventListener("change", () => {
+            lastPrefillKey = "";
+        });
+    }
 
     function resetNewTicketForm() {
         newTicketForm.reset();
@@ -252,6 +384,7 @@
         document.getElementById("customer_id").value = "";
         document.getElementById("truck_id").value = "";
         document.getElementById("material_id").value = "";
+        lastPrefillKey = "";
         toggleDateInput();
         loadMaterials(directionSelect.value || "IN");
         newTicketForm.target = "_self";
