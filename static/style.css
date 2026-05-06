@@ -345,6 +345,26 @@ td {
     font-weight: 600;
 }
 
+.daily-date-form {
+    display: flex;
+    align-items: end;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.daily-date-label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #334155;
+}
+
+.daily-date-form input[type="date"] {
+    min-width: 160px;
+}
+
 .daily-board-card {
     padding: 10px;
 }

@@ -2,10 +2,16 @@
 {% block content %}
 <section class="card daily-toolbar">
     <h2>Daily Dispatch Dashboard</h2>
-    <p class="daily-date">Date: {{ report_date }}</p>
+    <form method="get" class="daily-date-form">
+        <label class="daily-date-label">Date
+            <input type="date" name="report_date" value="{{ report_date_input }}">
+        </label>
+        <button type="submit">Load</button>
+    </form>
+    <p class="daily-date">Showing: {{ report_date }}</p>
     <div class="actions">
         <!-- <button type="button" onclick="window.print()">Print</button> -->
-        <a href="{{ url_for('print_daily_report') }}" target="_blank" rel="noopener">Download PDF</a>
+        <a href="{{ url_for('print_daily_report', report_date=report_date_input) }}" target="_blank" rel="noopener">Download PDF</a>
         <a href="{{ url_for('reports') }}">Back to Reports</a>
     </div>
 </section>
@@ -46,7 +52,7 @@
                 </ul>
             </article>
         {% else %}
-            <p class="daily-empty-page">No active tickets found for today.</p>
+            <p class="daily-empty-page">No active tickets found for selected date.</p>
         {% endfor %}
     </div>
 </section>

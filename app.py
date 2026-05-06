@@ -2865,7 +2865,13 @@ def print_reports():
 @app.get("/reports/daily-print")
 def print_daily_report():
     db = get_db()
+    report_date_raw = request.args.get("report_date", "").strip()
     report_date = app_now().date()
+    if report_date_raw:
+        try:
+            report_date = datetime.fromisoformat(report_date_raw).date()
+        except ValueError:
+            pass
     report_date_str = report_date.isoformat()
 
     job_blocks, totals = build_daily_report_data(db, report_date_str)
@@ -2907,7 +2913,13 @@ def print_daily_report():
 @app.get("/reports/daily")
 def daily_report_dashboard():
     db = get_db()
+    report_date_raw = request.args.get("report_date", "").strip()
     report_date = app_now().date()
+    if report_date_raw:
+        try:
+            report_date = datetime.fromisoformat(report_date_raw).date()
+        except ValueError:
+            pass
     report_date_str = report_date.isoformat()
 
     job_blocks, totals = build_daily_report_data(db, report_date_str)
@@ -2915,6 +2927,7 @@ def daily_report_dashboard():
     return render_template(
         "daily_report.html",
         report_date=report_date.strftime("%m/%d/%Y"),
+        report_date_input=report_date_str,
         job_blocks=job_blocks,
         totals=totals,
     )
