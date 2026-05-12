@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+    <h2>Edit Trucks</h2>
+    <form method="get" class="form-grid">
+        <label class="full">Search Trucks
+            <input
+                type="text"
+                name="q"
+                value="{{ truck_query or '' }}"
+                placeholder="Truck number, truck size, hauled by, or license plate"
+            >
+        </label>
+        <div class="actions full">
+            <button type="submit">Search</button>
+            <a href="{{ url_for('edit_trucks') }}">Clear</a>
+        </div>
+    </form>
+</section>
+
+{% if selected_truck %}
+<section class="card">
+    <div class="actions" style="justify-content: space-between;">
+        <h3>Edit Truck {{ selected_truck.truck_number }}</h3>
+        <a href="{{ url_for('edit_trucks', q=truck_query) }}">Back To List</a>
+    </div>
+
+    <form method="post" action="{{ url_for('save_truck_edit', truck_id=selected_truck.id) }}" class="form-grid">
+        <input type="hidden" name="q" value="{{ truck_query }}">
+
+        <label>Truck Number
+            <input type="text" name="truck_number" value="{{ selected_truck.truck_number }}" required>
+        </label>
+
+        <label>Description
+            <input type="text" name="description" value="{{ selected_truck.description or '' }}">
+        </label>
+
+        <label>Truck Size
+            <select name="truck_size">
+                <option value="" {% if not selected_truck.truck_size %}selected{% endif %}>-- Select Axle Size --</option>
+                <option value="Axle 1" {% if selected_truck.truck_size == 'Axle 1' %}selected{% endif %}>Axle 1</option>
+                <option value="Tandem" {% if selected_truck.truck_size == 'Tandem' %}selected{% endif %}>Tandem</option>
+                <option value="TriAxle" {% if selected_truck.truck_size == 'TriAxle' %}selected{% endif %}>TriAxle</option>
+                <option value="Axle 4_5" {% if selected_truck.truck_size == 'Axle 4_5' %}selected{% endif %}>Axle 4/5</option>
+                <option value="Axle 6" {% if selected_truck.truck_size == 'Axle 6' %}selected{% endif %}>Axle 6</option>
+                <option value="Semi" {% if selected_truck.truck_size == 'Semi' %}selected{% endif %}>Semi</option>
+                <option value="HydVac" {% if selected_truck.truck_size == 'HydVac' %}selected{% endif %}>HydVac</option>
+                <option value="DIRT_IN" {% if selected_truck.truck_size == 'DIRT_IN' %}selected{% endif %}>DIRT IN</option>
+            </select>
+        </label>
+
+        <label>Hauled By
+            <input type="text" name="hauled_by" value="{{ selected_truck.hauled_by or '' }}" placeholder="e.g. Carrier name">
+        </label>
+
+        <label>License Plate
+            <input type="text" name="license_plate" value="{{ selected_truck.license_plate or '' }}" placeholder="e.g. ABC1234">
+        </label>
+
+        <label>Status
+            <select name="active">
+                <option value="1" {% if selected_truck.active %}selected{% endif %}>Active</option>
+                <option value="0" {% if not selected_truck.active %}selected{% endif %}>Inactive</option>
+            </select>
+        </label>
+
+        <div class="actions full">
+            <button type="submit">Save Truck</button>
+        </div>
+    </form>
+</section>
+{% endif %}
+
+<section class="card">
+    <h3>Matching Trucks</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>Truck Number</th>
+                <th>Description</th>
+                <th>Truck Size</th>
+                <th>Hauled By</th>
+                <th>License Plate</th>
+                <th>Status</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for t in trucks %}
+            <tr>
+                <td>{{ t.truck_number }}</td>
+                <td>{{ t.description }}</td>
+                <td>{{ t.truck_size }}</td>
+                <td>{{ t.hauled_by }}</td>
+                <td>{{ t.license_plate }}</td>
+                <td>{{ "Active" if t.active else "Inactive" }}</td>
+                <td>
+                    <a href="{{ url_for('edit_trucks', q=truck_query, edit_id=t.id) }}">Edit</a>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="7">No trucks found.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endblock %}

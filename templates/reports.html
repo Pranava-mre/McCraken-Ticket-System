@@ -30,6 +30,15 @@
             </select>
         </label>
 
+        <label>Customer
+            <input type="text" name="customer" list="customers_list" value="{{ filters.customer }}" placeholder="Select Customer">
+            <datalist id="customers_list">
+                {% for c in customers %}
+                    <option value="{{ c.customer_name }}"></option>
+                {% endfor %}
+            </datalist>
+        </label>
+
         <label>Material
             <select name="material_id">
                 <option value="">All materials</option>
@@ -48,12 +57,13 @@
                     date_to=filters.date_to,
                     direction=filters.direction,
                     job_id=filters.job_id,
+                    customer=filters.customer,
                     material_id=filters.material_id) }}">
                     Print Report
                 </a>
             <a class="report-daily-cta" href="{{ url_for('daily_report_dashboard') }}" target="_blank" rel="noopener">Daily Report</a>
 
-            <a href="{{ url_for('export_reports_csv', date_from=filters.date_from, date_to=filters.date_to, direction=filters.direction, job_id=filters.job_id, material_id=filters.material_id) }}">Export CSV</a>
+            <a href="{{ url_for('export_reports_csv', date_from=filters.date_from, date_to=filters.date_to, direction=filters.direction, job_id=filters.job_id, customer=filters.customer, material_id=filters.material_id) }}">Export CSV</a>
             <a href="{{ url_for('reports') }}">Clear</a>
         </div>
     </form>
@@ -186,6 +196,7 @@
                 date_to=filters.date_to,
                 direction=filters.direction,
                 job_id=filters.job_id,
+                customer=filters.customer,
                 material_id=filters.material_id,
                 offset=offset+20) }}">
                 Show More

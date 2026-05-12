@@ -95,6 +95,9 @@ AZURE_TICKETS_BLOB_PREFIX = os.getenv("AZURE_TICKETS_BLOB_PREFIX", "tickets").st
 AZURE_REPORTS_BLOB_PREFIX = os.getenv("AZURE_REPORTS_BLOB_PREFIX", "reports").strip().strip("/")
 AZURE_DOWNLOADS_BLOB_PREFIX = os.getenv("AZURE_DOWNLOADS_BLOB_PREFIX", "downloads").strip().strip("/")
 AZURE_JOBS_CACHE_BLOB_NAME = os.getenv("AZURE_JOBS_CACHE_BLOB_NAME", "jobs_cache/jobs_cache.csv").strip().strip("/")
+CREDIT_CARD_CUSTOMER_MATCH = os.getenv("CREDIT_CARD_CUSTOMER_MATCH", "credit card").strip() or "credit card"
+CREDIT_CARD_REPORT_API_KEY = os.getenv("CREDIT_CARD_REPORT_API_KEY", "").strip()
+CREDIT_CARD_REPORT_SAS_MINUTES = int(os.getenv("CREDIT_CARD_REPORT_SAS_MINUTES", "180").strip() or "180")
 
 
 def env_flag(name, default=False):
@@ -150,6 +153,57 @@ def upload_pdf_to_blob(blob_name, pdf_bytes):
     content_settings = ContentSettings(content_type="application/pdf") if ContentSettings else None
     blob_client.upload_blob(pdf_bytes, overwrite=True, content_settings=content_settings)
     return blob_client.url
+
+
+def get_storage_account_key_from_connection_string():
+    if not AZURE_STORAGE_CONNECTION_STRING:
+        return ""
+
+    for part in AZURE_STORAGE_CONNECTION_STRING.split(";"):
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        if key.strip().lower() == "accountkey":
+            return value.strip()
+    return ""
+
+
+def generate_blob_read_sas_url(blob_name, expiry_minutes):
+    blob_service = get_blob_service_client()
+    if blob_service is None:
+        raise RuntimeError("Could not initialize Azure Blob client.")
+
+    try:
+        from azure.storage.blob import generate_blob_sas
+        from azure.storage.blob import BlobSasPermissions
+    except ImportError as exc:
+        raise RuntimeError("SAS generation requires azure-storage-blob package.") from exc
+
+    account_name = str(getattr(blob_service, "account_name", "") or "").strip()
+    if not account_name:
+        raise RuntimeError("Could not determine Azure storage account name.")
+
+    account_key = get_storage_account_key_from_connection_string()
+    if not account_key:
+        raise RuntimeError("Account key not found in AZURE_STORAGE_CONNECTION_STRING.")
+
+    safe_minutes = max(1, min(int(expiry_minutes), 7 * 24 * 60))
+    expires_at_utc = datetime.utcnow() + timedelta(minutes=safe_minutes)
+
+    sas_token = generate_blob_sas(
+        account_name=account_name,
+        container_name=AZURE_STORAGE_CONTAINER,
+        blob_name=blob_name,
+        account_key=account_key,
+        permission=BlobSasPermissions(read=True),
+        expiry=expires_at_utc,
+    )
+    if not sas_token:
+        raise RuntimeError("Failed to generate SAS token.")
+
+    base_blob_url = f"https://{account_name}.blob.core.windows.net/{AZURE_STORAGE_CONTAINER}/{blob_name}"
+    sas_url = f"{base_blob_url}?{sas_token}"
+    return sas_url, expires_at_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def upload_download_audit_blob(category, filename, file_bytes, mimetype):
@@ -930,6 +984,114 @@ def report_to_pdf_bytes(tickets, totals_by_unit, totals_by_material, filters):
     return buffer.read()
 
 
+def fetch_credit_card_sales_rows(db, report_date, customer_match):
+    like_value = f"%{customer_match}%"
+    with db.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT
+                t.ticket_number,
+                t.created_at,
+                t.customer_snapshot,
+                t.job_code_snapshot,
+                t.job_name_snapshot,
+                t.truck_number_snapshot,
+                t.material_name_snapshot,
+                t.quantity,
+                t.unit,
+                t.cost
+            FROM tickets t
+            WHERE COALESCE(t.active, TRUE) = TRUE
+              AND date(t.created_at) = date(%s)
+              AND COALESCE(t.customer_snapshot, '') ILIKE %s
+            ORDER BY t.created_at ASC, t.id ASC
+            """,
+            (report_date.isoformat(), like_value),
+        )
+        return cursor.fetchall()
+
+
+def credit_card_daily_report_to_pdf_bytes(rows, report_date, customer_match):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter)
+
+    styles = getSampleStyleSheet()
+    normal = styles["Normal"]
+    heading = styles["Heading2"]
+    subheading = styles["Heading3"]
+
+    elements = []
+    elements.append(Paragraph("Daily Credit Card Sales Report", heading))
+    elements.append(Paragraph(f"Report Date: {report_date.strftime('%m/%d/%Y')}", normal))
+    elements.append(Paragraph(f"Customer match: {customer_match}", normal))
+    elements.append(Paragraph(f"Generated: {app_now().strftime('%m/%d/%Y %I:%M %p %Z')}", normal))
+    elements.append(Spacer(1, 12))
+
+    if not rows:
+        elements.append(Paragraph("No credit card sales for this day.", subheading))
+        doc.build(elements)
+        buffer.seek(0)
+        return buffer.read()
+
+    total_amount = sum(float(r.get("cost") or 0) for r in rows)
+    total_count = len(rows)
+
+    elements.append(Paragraph(f"Total transactions: {total_count}", normal))
+    elements.append(Paragraph(f"Total amount: ${total_amount:.2f}", normal))
+    elements.append(Spacer(1, 10))
+
+    table_data = [[
+        "Ticket #",
+        "Time",
+        "Customer",
+        "Job",
+        "Truck",
+        "Material",
+        "Qty",
+        "Unit",
+        "Cost",
+    ]]
+
+    for row in rows:
+        job_text = " - ".join(
+            part for part in [
+                str(row.get("job_code_snapshot") or "").strip(),
+                str(row.get("job_name_snapshot") or "").strip(),
+            ]
+            if part
+        )
+        table_data.append([
+            str(row.get("ticket_number") or ""),
+            format_ticket_datetime(row.get("created_at")),
+            str(row.get("customer_snapshot") or ""),
+            job_text,
+            str(row.get("truck_number_snapshot") or ""),
+            str(row.get("material_name_snapshot") or ""),
+            f"{float(row.get('quantity') or 0):.2f}",
+            str(row.get("unit") or ""),
+            f"${float(row.get('cost') or 0):.2f}",
+        ])
+
+    table = Table(
+        table_data,
+        colWidths=[58, 58, 85, 95, 48, 65, 32, 36, 45],
+        repeatRows=1,
+    )
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+        ("GRID", (0, 0), (-1, -1), 1, colors.black),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("ALIGN", (6, 1), (6, -1), "RIGHT"),
+        ("ALIGN", (8, 1), (8, -1), "RIGHT"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+    elements.append(table)
+
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer.read()
+
+
 def daily_report_to_pdf_bytes(job_blocks, report_date, totals):
     buffer = io.BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=letter)
@@ -1698,7 +1860,10 @@ def list_materials(db, direction=None):
 
 @app.before_request
 def require_login():
-    open_endpoints = {"login", "logout", "static", "healthz"}
+    if request.endpoint is None:
+        return
+
+    open_endpoints = {"login", "logout", "static", "healthz", "api_credit_card_daily_report"}
     if request.endpoint in open_endpoints:
         return
     if not session.get("logged_in"):
@@ -2079,6 +2244,7 @@ def search_tickets():
     ticket_number = request.args.get("ticket_number", "").strip()
     truck = request.args.get("truck", "").strip()
     job = request.args.get("job", "").strip()
+    customer = request.args.get("customer", "").strip()
     material = request.args.get("material", "").strip()
     date_from = request.args.get("date_from", "").strip()
     date_to = request.args.get("date_to", "").strip()
@@ -2112,6 +2278,9 @@ def search_tickets():
     if job:
         query += " AND job_code_snapshot ILIKE %s"
         params.append(f"%{job}%")
+    if customer:
+        query += " AND customer_snapshot ILIKE %s"
+        params.append(f"%{customer}%")
     if material:
         query += " AND material_name_snapshot ILIKE %s"
         params.append(f"%{material}%")
@@ -2126,7 +2295,11 @@ def search_tickets():
     with db.cursor() as cursor:
         cursor.execute(query, tuple(params))
         tickets = cursor.fetchall()
-    return render_template("ticket_search.html", tickets=tickets)
+    return render_template(
+        "ticket_search.html",
+        tickets=tickets,
+        customers=list_customers(db),
+    )
 
 
 @app.route("/tickets/edit", methods=["GET"])
@@ -2135,6 +2308,7 @@ def edit_tickets():
     ticket_number = request.args.get("ticket_number", "").strip()
     truck = request.args.get("truck", "").strip()
     job = request.args.get("job", "").strip()
+    customer = request.args.get("customer", "").strip()
     material = request.args.get("material", "").strip()
     date_from = request.args.get("date_from", "").strip()
     date_to = request.args.get("date_to", "").strip()
@@ -2182,6 +2356,9 @@ def edit_tickets():
     if job:
         query += " AND job_code_snapshot ILIKE %s"
         params.append(f"%{job}%")
+    if customer:
+        query += " AND customer_snapshot ILIKE %s"
+        params.append(f"%{customer}%")
     if material:
         query += " AND material_name_snapshot ILIKE %s"
         params.append(f"%{material}%")
@@ -2270,11 +2447,13 @@ def edit_tickets():
         selected_ticket=selected_ticket,
         jobs=jobs,
         customers=customers,
+        search_customers=list_customers(db),
         trucks=trucks,
         materials=materials,
         ticket_number=ticket_number,
         truck=truck,
         job=job,
+        customer=customer,
         material=material,
         date_from=date_from,
         date_to=date_to,
@@ -2286,7 +2465,7 @@ def edit_tickets():
 def save_ticket_edit(ticket_id):
     db = get_db()
 
-    filter_keys = ["ticket_number", "truck", "job", "material", "date_from", "date_to", "edit_id"]
+    filter_keys = ["ticket_number", "truck", "job", "customer", "material", "date_from", "date_to", "edit_id"]
     filter_args = {}
     for key in filter_keys:
         value = request.form.get(key, "").strip()
@@ -2482,7 +2661,7 @@ def save_ticket_edit(ticket_id):
 def void_ticket_from_edit(ticket_id):
     db = get_db()
 
-    filter_keys = ["ticket_number", "truck", "job", "material", "date_from", "date_to", "edit_id"]
+    filter_keys = ["ticket_number", "truck", "job", "customer", "material", "date_from", "date_to", "edit_id"]
     filter_args = {}
     for key in filter_keys:
         value = request.form.get(key, "").strip()
@@ -2529,6 +2708,7 @@ def reports():
     date_to = request.args.get("date_to", "").strip()
     direction = request.args.get("direction", "").strip().upper()
     job_id = request.args.get("job_id", "").strip()
+    customer = request.args.get("customer", "").strip()
     material_id = request.args.get("material_id", "").strip()
     offset = int(request.args.get("offset", 0))
     if not date_from and not date_to:
@@ -2550,6 +2730,9 @@ def reports():
     if job_id:
         where.append("t.job_id = %s")
         params.append(job_id)
+    if customer:
+        where.append("t.customer_snapshot ILIKE %s")
+        params.append(f"%{customer}%")
     if material_id:
         where.append("t.material_id = %s")
         params.append(material_id)
@@ -2642,16 +2825,19 @@ def reports():
         "reports.html",
         tickets=tickets,
         offset=offset,
+        today_date=app_now().date().isoformat(),
         totals_by_unit=totals_by_unit,
         totals_by_material=totals_by_material,
         totals_by_direction=totals_by_direction,
         jobs=list_jobs(db),
+        customers=list_customers(db),
         materials=list_materials(db,direction=direction),
         filters={
             "date_from": date_from,
             "date_to": date_to,
             "direction": direction,
             "job_id": job_id,
+            "customer": customer,
             "material_id": material_id,
         },
     )
@@ -2664,6 +2850,7 @@ def export_reports_csv():
     date_to = request.args.get("date_to", "").strip()
     direction = request.args.get("direction", "").strip().upper()
     job_id = request.args.get("job_id", "").strip()
+    customer = request.args.get("customer", "").strip()
     material_id = request.args.get("material_id", "").strip()
 
     where = ["COALESCE(t.active, TRUE) = TRUE"]
@@ -2681,6 +2868,9 @@ def export_reports_csv():
     if job_id:
         where.append("t.job_id = %s")
         params.append(job_id)
+    if customer:
+        where.append("t.customer_snapshot ILIKE %s")
+        params.append(f"%{customer}%")
     if material_id:
         where.append("t.material_id = %s")
         params.append(material_id)
@@ -2819,6 +3009,84 @@ def export_reports_csv():
         as_attachment=True,
         download_name=download_filename,
     )
+
+
+@app.post("/reports/credit-card/daily")
+@app.post("/api/reports/credit-card/daily")
+def api_credit_card_daily_report():
+    expected_key = CREDIT_CARD_REPORT_API_KEY
+    provided_key = (request.headers.get("X-API-Key") or request.args.get("api_key") or "").strip()
+
+    if not expected_key:
+        return {"ok": False, "error": "CREDIT_CARD_REPORT_API_KEY is not configured."}, 503
+    if not hmac.compare_digest(provided_key, expected_key):
+        return {"ok": False, "error": "Unauthorized."}, 401
+
+    body = request.get_json(silent=True) if request.is_json else {}
+    body = body or {}
+
+    report_date_raw = str(body.get("report_date") or request.args.get("report_date") or "").strip()
+    sas_minutes_raw = str(body.get("sas_minutes") or request.args.get("sas_minutes") or CREDIT_CARD_REPORT_SAS_MINUTES).strip()
+
+    report_date = app_now().date()
+    if report_date_raw:
+        try:
+            report_date = datetime.fromisoformat(report_date_raw).date()
+        except ValueError:
+            return {"ok": False, "error": "Invalid report_date. Use YYYY-MM-DD."}, 400
+
+    try:
+        sas_minutes = int(sas_minutes_raw)
+    except ValueError:
+        return {"ok": False, "error": "Invalid sas_minutes. Use an integer."}, 400
+
+    db = get_db()
+    rows = fetch_credit_card_sales_rows(db, report_date, CREDIT_CARD_CUSTOMER_MATCH)
+    pdf_bytes = credit_card_daily_report_to_pdf_bytes(rows, report_date, CREDIT_CARD_CUSTOMER_MATCH)
+    stamp = app_now().strftime("%Y%m%d_%H%M%S")
+    filename = f"credit_card_sales_{report_date.strftime('%Y%m%d')}_{stamp}.pdf"
+
+    if not AZURE_STORAGE_CONNECTION_STRING:
+        return {"ok": False, "error": "AZURE_STORAGE_CONNECTION_STRING is not configured."}, 503
+
+    blob_name = f"{AZURE_REPORTS_BLOB_PREFIX}/{filename}" if AZURE_REPORTS_BLOB_PREFIX else filename
+    try:
+        blob_url = upload_pdf_to_blob(blob_name, pdf_bytes)
+    except Exception as exc:
+        return {"ok": False, "error": f"Blob upload failed: {exc}"}, 500
+
+    if not blob_url:
+        return {"ok": False, "error": "Blob upload failed: no blob URL returned."}, 500
+
+    try:
+        sas_url, sas_expires_at_utc = generate_blob_read_sas_url(blob_name, sas_minutes)
+    except Exception as exc:
+        return {"ok": False, "error": f"SAS generation failed: {exc}"}, 500
+
+    try:
+        upload_download_audit_blob(
+            category="reports_pdf_credit_card",
+            filename=filename,
+            file_bytes=pdf_bytes,
+            mimetype="application/pdf",
+        )
+    except Exception as exc:
+        app.logger.warning("Could not audit-upload API credit-card report PDF: %s", exc)
+
+    return {
+        "ok": True,
+        "report_date": report_date.isoformat(),
+        "customer_match": CREDIT_CARD_CUSTOMER_MATCH,
+        "transactions": len(rows),
+        "total_cost": round(sum(float(r.get("cost") or 0) for r in rows), 2),
+        "pdf_filename": filename,
+        "blob_url": blob_url,
+        "sas_url": sas_url,
+        "sas_expires_at_utc": sas_expires_at_utc,
+        "sas_minutes": sas_minutes,
+    }, 200
+
+
 @app.get("/reports/print")
 def print_reports():
     db = get_db()
@@ -2827,6 +3095,7 @@ def print_reports():
     date_to = request.args.get("date_to", "")
     direction = request.args.get("direction", "")
     job_id = request.args.get("job_id", "")
+    customer = request.args.get("customer", "").strip()
     material_id = request.args.get("material_id", "")
 
     where = ["COALESCE(t.active, TRUE)=TRUE"]
@@ -2847,6 +3116,10 @@ def print_reports():
     if job_id:
         where.append("t.job_id=%s")
         params.append(job_id)
+
+    if customer:
+        where.append("t.customer_snapshot ILIKE %s")
+        params.append(f"%{customer}%")
 
     if material_id:
         where.append("t.material_id=%s")
@@ -2911,6 +3184,7 @@ def print_reports():
             "date_to": date_to,
             "direction": direction,
             "job_id": job_id,
+            "customer": customer,
             "material_id": material_id,
         },
     )
@@ -3286,6 +3560,114 @@ def toggle_truck(truck_id):
             )
     db.commit() 
     return redirect(url_for("admin_trucks"))
+
+
+@app.get("/admin/trucks/edit")
+def edit_trucks():
+    db = get_db()
+    truck_query = request.args.get("q", "").strip()
+    edit_id_raw = request.args.get("edit_id", "").strip()
+
+    edit_id = int(edit_id_raw) if edit_id_raw.isdigit() else None
+
+    with db.cursor() as cursor:
+        if truck_query:
+            like_query = f"%{truck_query}%"
+            cursor.execute(
+                """
+                SELECT id, truck_number, notes AS description, truck_size, trucking_company AS hauled_by, license_plate, active
+                FROM trucks_main
+                WHERE truck_number ILIKE %s
+                   OR COALESCE(truck_size, '') ILIKE %s
+                   OR COALESCE(trucking_company, '') ILIKE %s
+                   OR COALESCE(license_plate, '') ILIKE %s
+                ORDER BY truck_number
+                """,
+                (like_query, like_query, like_query, like_query),
+            )
+        else:
+            cursor.execute(
+                "SELECT id, truck_number, notes AS description, truck_size, trucking_company AS hauled_by, license_plate, active FROM trucks_main ORDER BY truck_number"
+            )
+        rows = cursor.fetchall()
+
+    selected_truck = None
+    if edit_id is not None:
+        selected_truck = next((t for t in rows if t.get("id") == edit_id), None)
+        if not selected_truck:
+            with db.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, truck_number, notes AS description, truck_size, trucking_company AS hauled_by, license_plate, active
+                    FROM trucks_main
+                    WHERE id = %s
+                    """,
+                    (edit_id,),
+                )
+                selected_truck = cursor.fetchone()
+
+    return render_template(
+        "edit_trucks.html",
+        trucks=rows,
+        selected_truck=selected_truck,
+        truck_query=truck_query,
+    )
+
+
+@app.post("/admin/trucks/<int:truck_id>/edit-save")
+def save_truck_edit(truck_id):
+    db = get_db()
+    truck_query = request.form.get("q", "").strip()
+
+    truck_number = request.form.get("truck_number", "").strip()
+    description = request.form.get("description", "").strip()
+    truck_size = request.form.get("truck_size", "").strip()
+    hauled_by = request.form.get("hauled_by", "").strip()
+    license_plate = request.form.get("license_plate", "").strip()
+    active_raw = request.form.get("active", "").strip().lower()
+
+    if not truck_number:
+        flash("Truck number is required.", "error")
+        return redirect(url_for("edit_trucks", q=truck_query, edit_id=truck_id))
+
+    active_is_boolean = is_active_column_boolean(db, "trucks_main")
+    if active_is_boolean:
+        active_value = active_raw in {"1", "true", "yes", "on"}
+    else:
+        active_value = 1 if active_raw in {"1", "true", "yes", "on"} else 0
+
+    try:
+        with db.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE trucks_main
+                SET truck_number = %s,
+                    notes = %s,
+                    truck_size = %s,
+                    trucking_company = %s,
+                    license_plate = %s,
+                    active = %s
+                WHERE id = %s
+                """,
+                (truck_number, description, truck_size, hauled_by, license_plate, active_value, truck_id),
+            )
+            if cursor.rowcount == 0:
+                db.rollback()
+                flash("Truck not found.", "error")
+                return redirect(url_for("edit_trucks", q=truck_query))
+
+        db.commit()
+        flash(f"Truck {truck_number} updated.", "success")
+    except IntegrityError:
+        db.rollback()
+        flash("Truck number already exists.", "error")
+        return redirect(url_for("edit_trucks", q=truck_query, edit_id=truck_id))
+    except Exception as exc:
+        db.rollback()
+        flash(f"Could not update truck: {exc}", "error")
+        return redirect(url_for("edit_trucks", q=truck_query, edit_id=truck_id))
+
+    return redirect(url_for("edit_trucks", q=truck_query, edit_id=truck_id))
 
 
 @app.get("/admin/materials")

@@ -12,6 +12,14 @@
         <label>Job Code
             <input type="text" name="job" value="{{ request.args.get('job', '') }}">
         </label>
+        <label>Customer
+            <input type="text" name="customer" list="customers_list" value="{{ request.args.get('customer', '') }}" placeholder="Select Customer">
+            <datalist id="customers_list">
+                {% for c in customers %}
+                    <option value="{{ c.customer_name }}"></option>
+                {% endfor %}
+            </datalist>
+        </label>
         <label>Material
             <input type="text" name="material" value="{{ request.args.get('material', '') }}">
         </label>
