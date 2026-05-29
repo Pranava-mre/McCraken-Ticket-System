@@ -1056,7 +1056,7 @@ def fetch_credit_card_sales_rows(db, report_date, customer_match):
         return cursor.fetchall()
 
 
-def fetch_non_credit_card_sales_rows(db, report_date, customer_match):
+def fetch_non_credit_card_sales_rows(db, start_date, end_date, customer_match):
     like_value = f"%{customer_match}%"
     with db.cursor() as cursor:
         cursor.execute(
@@ -1074,11 +1074,11 @@ def fetch_non_credit_card_sales_rows(db, report_date, customer_match):
                 t.cost
             FROM tickets t
             WHERE COALESCE(t.active, TRUE) = TRUE
-              AND date(t.created_at) = date(%s)
+                            AND date(t.created_at) BETWEEN date(%s) AND date(%s)
               AND COALESCE(t.customer_snapshot, '') NOT ILIKE %s
             ORDER BY COALESCE(NULLIF(TRIM(t.customer_snapshot), ''), 'zzzzzz') ASC, t.created_at ASC, t.id ASC
             """,
-            (report_date.isoformat(), like_value),
+                        (start_date.isoformat(), end_date.isoformat(), like_value),
         )
         return cursor.fetchall()
 
@@ -1164,7 +1164,7 @@ def credit_card_daily_report_to_pdf_bytes(rows, report_date, customer_match):
     return buffer.read()
 
 
-def non_credit_card_daily_report_to_pdf_bytes(rows, report_date, customer_match):
+def non_credit_card_daily_report_to_pdf_bytes(rows, report_start_date, report_end_date, customer_match):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -1182,7 +1182,12 @@ def non_credit_card_daily_report_to_pdf_bytes(rows, report_date, customer_match)
 
     elements = []
     elements.append(Paragraph("Daily Non-Credit Card Sales Report", heading))
-    elements.append(Paragraph(f"Report Date: {report_date.strftime('%m/%d/%Y')}", normal))
+    elements.append(
+        Paragraph(
+            f"Report Range: {report_start_date.strftime('%m/%d/%Y')} - {report_end_date.strftime('%m/%d/%Y')}",
+            normal,
+        )
+    )
     elements.append(Paragraph(f"Excluding customer match: {customer_match}", normal))
     elements.append(Paragraph(f"Generated: {app_now().strftime('%m/%d/%Y %I:%M %p %Z')}", normal))
     elements.append(Spacer(1, 12))
@@ -1249,7 +1254,7 @@ def non_credit_card_daily_report_to_pdf_bytes(rows, report_date, customer_match)
         elements.append(Paragraph(f"Transactions: {len(customer_rows)} | Total amount: ${customer_total:.2f}", normal))
         elements.append(Spacer(1, 6))
 
-        table_data = [["Time", "Job", "Truck", "Material", "Cost"]]
+        table_data = [["Date/Time", "Job", "Truck", "Material", "Cost"]]
         for row in customer_rows:
             job_text = " - ".join(
                 part
@@ -1260,7 +1265,7 @@ def non_credit_card_daily_report_to_pdf_bytes(rows, report_date, customer_match)
                 if part
             )
             table_data.append([
-                clip_to_width(format_ticket_time(row.get("created_at")), col_widths[0]),
+                clip_to_width(format_ticket_datetime(row.get("created_at")), col_widths[0]),
                 clip_to_width(job_text, col_widths[1]),
                 clip_to_width(str(row.get("truck_number_snapshot") or ""), col_widths[2]),
                 clip_to_width(str(row.get("material_name_snapshot") or ""), col_widths[3]),
@@ -1302,10 +1307,10 @@ def non_credit_card_daily_report_to_pdf_bytes(rows, report_date, customer_match)
         elements.append(Spacer(1, 6))
 
         job_col_widths = [100, 100, 260, 70]
-        table_data = [["Time", "Truck", "Material", "Cost"]]
+        table_data = [["Date/Time", "Truck", "Material", "Cost"]]
         for row in job_rows:
             table_data.append([
-                clip_to_width(format_ticket_time(row.get("created_at")), job_col_widths[0]),
+                clip_to_width(format_ticket_datetime(row.get("created_at")), job_col_widths[0]),
                 clip_to_width(str(row.get("truck_number_snapshot") or ""), job_col_widths[1]),
                 clip_to_width(str(row.get("material_name_snapshot") or ""), job_col_widths[2]),
                 f"${float(row.get('cost') or 0):.2f}",
@@ -3624,10 +3629,13 @@ def api_non_credit_card_daily_report():
         return {"ok": False, "error": "Invalid sas_minutes. Use an integer."}, 400
 
     db = get_db()
-    rows = fetch_non_credit_card_sales_rows(db, report_date, CREDIT_CARD_CUSTOMER_MATCH)
-    pdf_bytes = non_credit_card_daily_report_to_pdf_bytes(rows, report_date, CREDIT_CARD_CUSTOMER_MATCH)
+    week_start = report_date - timedelta(days=report_date.weekday())
+    week_end = week_start + timedelta(days=6)
+
+    rows = fetch_non_credit_card_sales_rows(db, week_start, week_end, CREDIT_CARD_CUSTOMER_MATCH)
+    pdf_bytes = non_credit_card_daily_report_to_pdf_bytes(rows, week_start, week_end, CREDIT_CARD_CUSTOMER_MATCH)
     stamp = app_now().strftime("%Y%m%d_%H%M%S")
-    filename = f"non_credit_card_sales_{report_date.strftime('%Y%m%d')}_{stamp}.pdf"
+    filename = f"non_credit_card_sales_{week_start.strftime('%Y%m%d')}_{week_end.strftime('%Y%m%d')}_{stamp}.pdf"
 
     if not AZURE_STORAGE_CONNECTION_STRING:
         return {"ok": False, "error": "AZURE_STORAGE_CONNECTION_STRING is not configured."}, 503
@@ -3660,6 +3668,8 @@ def api_non_credit_card_daily_report():
     return {
         "ok": True,
         "report_date": report_date.isoformat(),
+        "week_start_date": week_start.isoformat(),
+        "week_end_date": week_end.isoformat(),
         "excluded_customer_match": CREDIT_CARD_CUSTOMER_MATCH,
         "customers": customers,
         "customer_count": len(customers),
