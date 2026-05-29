@@ -29,7 +29,7 @@ from flask import (
 )
 from reportlab.lib.pagesizes import letter, landscape
 from reportlab.pdfgen import canvas
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph,Spacer
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.pdfbase.pdfmetrics import stringWidth
@@ -1195,15 +1195,29 @@ def non_credit_card_daily_report_to_pdf_bytes(rows, report_date, customer_match)
 
     total_amount = sum(float(r.get("cost") or 0) for r in rows)
     total_count = len(rows)
-    grouped_rows = {}
+
+    def normalize_customer_name(value):
+        return " ".join(str(value or "").strip().lower().split())
+
+    our_customers = {"mrex", "petty group", "redcon"}
+    external_grouped_rows = {}
+    internal_grouped_rows = {}
 
     for row in rows:
         customer_name = str(row.get("customer_snapshot") or "").strip() or "(No Customer)"
-        grouped_rows.setdefault(customer_name, []).append(row)
+        customer_key = normalize_customer_name(customer_name)
+
+        if customer_key in our_customers:
+            job_code = str(row.get("job_code_snapshot") or "").strip()
+            job_name = str(row.get("job_name_snapshot") or "").strip()
+            job_key = (job_code, job_name)
+            internal_grouped_rows.setdefault(customer_name, {}).setdefault(job_key, []).append(row)
+        else:
+            external_grouped_rows.setdefault(customer_name, []).append(row)
 
     elements.append(Paragraph(f"Total transactions: {total_count}", normal))
     elements.append(Paragraph(f"Total amount: ${total_amount:.2f}", normal))
-    elements.append(Paragraph(f"Total customers: {len(grouped_rows)}", normal))
+    elements.append(Paragraph(f"Total customers: {len(external_grouped_rows) + len(internal_grouped_rows)}", normal))
     elements.append(Spacer(1, 10))
 
     col_widths = [100, 260, 90, 210, 70]
@@ -1222,25 +1236,24 @@ def non_credit_card_daily_report_to_pdf_bytes(rows, report_date, customer_match)
             text = text[:-1]
         return text
 
-    for customer_name in sorted(grouped_rows.keys(), key=lambda x: x.lower()):
-        customer_rows = grouped_rows[customer_name]
+    # Section 1: customers that are NOT MREX/Petty Group/Redcon.
+    # Each customer starts on a new page with one table for that customer.
+    external_customers = sorted(external_grouped_rows.keys(), key=lambda x: x.lower())
+    first_detail_page = True
+
+    def append_external_customer_page(customer_name, customer_rows):
         customer_total = sum(float(r.get("cost") or 0) for r in customer_rows)
 
+        elements.append(Paragraph("Section 1: Non-MREX / Non-Petty Group / Non-Redcon", subheading))
         elements.append(Paragraph(f"Customer: {customer_name}", subheading))
         elements.append(Paragraph(f"Transactions: {len(customer_rows)} | Total amount: ${customer_total:.2f}", normal))
         elements.append(Spacer(1, 6))
 
-        table_data = [[
-            "Time",
-            "Job",
-            "Truck",
-            "Material",
-            "Cost",
-        ]]
-
+        table_data = [["Time", "Job", "Truck", "Material", "Cost"]]
         for row in customer_rows:
             job_text = " - ".join(
-                part for part in [
+                part
+                for part in [
                     str(row.get("job_code_snapshot") or "").strip(),
                     str(row.get("job_name_snapshot") or "").strip(),
                 ]
@@ -1254,11 +1267,7 @@ def non_credit_card_daily_report_to_pdf_bytes(rows, report_date, customer_match)
                 f"${float(row.get('cost') or 0):.2f}",
             ])
 
-        table = Table(
-            table_data,
-            colWidths=col_widths,
-            repeatRows=1,
-        )
+        table = Table(table_data, colWidths=col_widths, repeatRows=1)
         table.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
             ("GRID", (0, 0), (-1, -1), 1, colors.black),
@@ -1268,7 +1277,60 @@ def non_credit_card_daily_report_to_pdf_bytes(rows, report_date, customer_match)
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ]))
         elements.append(table)
-        elements.append(Spacer(1, 12))
+
+    for customer_name in external_customers:
+        if first_detail_page:
+            first_detail_page = False
+        else:
+            elements.append(PageBreak())
+        append_external_customer_page(customer_name, external_grouped_rows[customer_name])
+
+    # Section 2: our customers (MREX/Petty Group/Redcon), grouped by job.
+    # Each job starts on a new page.
+    internal_customers = sorted(internal_grouped_rows.keys(), key=lambda x: x.lower())
+
+    def append_internal_job_page(customer_name, job_key, job_rows):
+        job_code, job_name = job_key
+        job_code = job_code or "(No Job Code)"
+        job_name = job_name or "(No Job Name)"
+        job_total = sum(float(r.get("cost") or 0) for r in job_rows)
+
+        elements.append(Paragraph("Section 2: MREX / Petty Group / Redcon (Grouped by Job)", subheading))
+        elements.append(Paragraph(f"Customer: {customer_name}", subheading))
+        elements.append(Paragraph(f"Job: {job_code} - {job_name}", subheading))
+        elements.append(Paragraph(f"Transactions: {len(job_rows)} | Total amount: ${job_total:.2f}", normal))
+        elements.append(Spacer(1, 6))
+
+        job_col_widths = [100, 100, 260, 70]
+        table_data = [["Time", "Truck", "Material", "Cost"]]
+        for row in job_rows:
+            table_data.append([
+                clip_to_width(format_ticket_time(row.get("created_at")), job_col_widths[0]),
+                clip_to_width(str(row.get("truck_number_snapshot") or ""), job_col_widths[1]),
+                clip_to_width(str(row.get("material_name_snapshot") or ""), job_col_widths[2]),
+                f"${float(row.get('cost') or 0):.2f}",
+            ])
+
+        table = Table(table_data, colWidths=job_col_widths, repeatRows=1)
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("GRID", (0, 0), (-1, -1), 1, colors.black),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("ALIGN", (3, 1), (3, -1), "RIGHT"),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]))
+        elements.append(table)
+
+    for customer_name in internal_customers:
+        job_groups = internal_grouped_rows[customer_name]
+        sorted_jobs = sorted(job_groups.keys(), key=lambda key: ((key[0] or "").lower(), (key[1] or "").lower()))
+        for job_key in sorted_jobs:
+            if first_detail_page:
+                first_detail_page = False
+            else:
+                elements.append(PageBreak())
+            append_internal_job_page(customer_name, job_key, job_groups[job_key])
 
     doc.build(elements)
     buffer.seek(0)
