@@ -390,6 +390,37 @@
         newTicketForm.target = "_self";
     }
 
+    async function applyApprovedTruckFromQuery() {
+        const params = new URLSearchParams(window.location.search || "");
+        const approvedTruck = (params.get("approved_truck") || "").trim();
+        if (!approvedTruck || !truckSearchInput || !truckIdInput) {
+            return;
+        }
+
+        const trucksList = document.getElementById("trucks_list");
+        if (!trucksList) {
+            return;
+        }
+
+        let selectedOption = null;
+        for (const option of trucksList.options) {
+            if ((option.value || "").trim().toLowerCase() === approvedTruck.toLowerCase()) {
+                selectedOption = option;
+                break;
+            }
+        }
+
+        truckSearchInput.value = approvedTruck;
+        truckIdInput.value = selectedOption ? (selectedOption.dataset.id || "") : "";
+
+        await prefillFromLatestTruckTicket();
+
+        params.delete("approved_truck");
+        const cleaned = params.toString();
+        const nextUrl = cleaned ? (window.location.pathname + "?" + cleaned) : window.location.pathname;
+        window.history.replaceState({}, "", nextUrl);
+    }
+
     if (newTicketForm && autoPrintCheckbox) {
         newTicketForm.addEventListener("submit", () => {
             if (autoPrintCheckbox.checked) {
@@ -405,6 +436,8 @@
             setTimeout(resetNewTicketForm, 0);
         });
     }
+
+    applyApprovedTruckFromQuery();
 
 </script>
 {% endblock %}

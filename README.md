@@ -148,6 +148,81 @@ Open: `http://127.0.0.1:5000`
 - Never commit `.env` to source control.
 - Rotate credentials immediately if a secret has been committed in the past.
 
+## RFID Truck Notification Webhook
+You can call a webhook from an external/local RFID script when a known truck is detected.
+
+Environment variable (recommended):
+```env
+RFID_EVENT_API_KEY=your_long_random_key
+```
+
+Webhook endpoint:
+```text
+POST /api/notifications/truck-seen
+```
+
+Authentication:
+- If `RFID_EVENT_API_KEY` is set, send header `X-API-Key: <key>` (or `?api_key=...`).
+- If `RFID_EVENT_API_KEY` is not set, only localhost calls are accepted (`127.0.0.1` / `::1`).
+
+Required payload:
+- `truck_number` (string)
+
+Optional payload:
+- `source` (string, example: `gate-reader-1`)
+- `message` (string, custom notification text)
+- `detected_at` (ISO timestamp, example: `2026-05-15T10:23:00Z`)
+
+Example request:
+```powershell
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:5000/api/notifications/truck-seen" `
+    -Headers @{"X-API-Key"="your_long_random_key"} `
+    -ContentType "application/json" `
+    -Body '{"truck_number":"TRK-102","source":"rfid-gate-1"}'
+```
+
+Behavior:
+- The truck number is validated against active trucks in `trucks_main`.
+- If known, a notification is stored and shown in the web app as a toast alert for logged-in users.
+- The UI polls `GET /api/notifications/poll` every 5 seconds.
+
+## Daily Sales PDF APIs (Azure Blob + Temporary URL)
+Set these environment variables:
+
+```env
+CREDIT_CARD_REPORT_API_KEY=your_long_random_key
+CREDIT_CARD_CUSTOMER_MATCH=credit card
+CREDIT_CARD_REPORT_SAS_MINUTES=180
+```
+
+Authentication:
+- Send `X-API-Key: <CREDIT_CARD_REPORT_API_KEY>` (or `?api_key=...`).
+
+Request parameters (JSON body or query string):
+- `report_date` (optional, format `YYYY-MM-DD`, default is today in app timezone)
+- `sas_minutes` (optional integer, default from `CREDIT_CARD_REPORT_SAS_MINUTES`)
+
+1. Credit-card-only daily sales report PDF:
+- `POST /api/reports/credit-card/daily`
+- `POST /reports/credit-card/daily`
+
+2. Non-credit-card daily sales report PDF (grouped by customer):
+- `POST /api/reports/non-credit-card/daily`
+- `POST /reports/non-credit-card/daily`
+
+Both endpoints:
+- Generate a PDF.
+- Upload to Azure Blob Storage under the reports prefix.
+- Return a temporary SAS URL (`sas_url`) plus expiry timestamp.
+
+Example call:
+```powershell
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:5000/api/reports/non-credit-card/daily" `
+    -Headers @{"X-API-Key"="your_long_random_key"} `
+    -ContentType "application/json" `
+    -Body '{"report_date":"2026-05-27","sas_minutes":180}'
+```
+
 ## Workflow
 1. Open `New Ticket`.
 2. Click `Refresh Jobs Cache` to sync SQL jobs into PostgreSQL `jobs_cache`.

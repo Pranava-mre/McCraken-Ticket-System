@@ -23,6 +23,23 @@
             <a href="{{ url_for('admin_trucks') }}">Trucks</a>
             <a href="{{ url_for('edit_trucks') }}">Edit Trucks</a>
             <a href="{{ url_for('admin_materials') }}">Materials</a>
+            {#
+            {% if session.get("logged_in") %}
+                <div class="notification-bell-wrap">
+                    <button type="button" id="notification_bell_btn" class="notification-bell-btn" aria-label="Open notifications" aria-expanded="false">
+                        <span class="notification-bell-icon" aria-hidden="true">&#128276;</span>
+                        <span class="notification-bell-count" id="notification_bell_count" hidden>0</span>
+                    </button>
+                    <div class="notification-panel" id="notification_panel" hidden>
+                        <div class="notification-panel-header">
+                            <strong>Truck Notifications</strong>
+                            <button type="button" id="notification_refresh_btn" class="notification-refresh-btn">Refresh</button>
+                        </div>
+                        <div id="notification_list" class="notification-list"></div>
+                    </div>
+                </div>
+            {% endif %}
+            #}
             <form method="post" action="{{ url_for('logout') }}" style="display:inline;margin-left:12px;">
                 <button type="submit" style="cursor:pointer;">Logout</button>
             </form>
@@ -40,5 +57,219 @@
         {% endwith %}
         {% block content %}{% endblock %}
     </main>
+    {#
+    {% if session.get("logged_in") %}
+        <script>
+            (function () {
+                const bellButton = document.getElementById("notification_bell_btn");
+                const bellCount = document.getElementById("notification_bell_count");
+                const panel = document.getElementById("notification_panel");
+                const list = document.getElementById("notification_list");
+                const refreshButton = document.getElementById("notification_refresh_btn");
+
+                if (!bellButton || !bellCount || !panel || !list || !refreshButton) {
+                    return;
+                }
+
+                let isPolling = false;
+                let notifications = [];
+
+                function formatTime(value) {
+                    if (!value) {
+                        return "";
+                    }
+                    const d = new Date(value);
+                    if (Number.isNaN(d.getTime())) {
+                        return "";
+                    }
+                    return d.toLocaleString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                        month: "2-digit",
+                        day: "2-digit"
+                    });
+                }
+
+                function updateBadge() {
+                    const pendingCount = notifications.filter(function (n) {
+                        return n.status === "pending";
+                    }).length;
+
+                    if (pendingCount > 0) {
+                        bellCount.hidden = false;
+                        bellCount.textContent = String(pendingCount > 99 ? "99+" : pendingCount);
+                    } else {
+                        bellCount.hidden = true;
+                    }
+                }
+
+                function renderList() {
+                    list.innerHTML = "";
+
+                    if (!notifications.length) {
+                        const empty = document.createElement("div");
+                        empty.className = "notification-empty";
+                        empty.textContent = "No notifications yet.";
+                        list.appendChild(empty);
+                        return;
+                    }
+
+                    notifications.forEach(function (n) {
+                        const item = document.createElement("div");
+                        item.className = "notification-item";
+
+                        const title = document.createElement("div");
+                        title.className = "notification-item-title";
+                        title.textContent = n.message || ("Known truck appeared: " + (n.truck_number || ""));
+
+                        const meta = document.createElement("div");
+                        meta.className = "notification-item-meta";
+                        const source = n.source ? ("Source: " + n.source) : "Source: rfid";
+                        const label = formatTime(n.detected_at || n.created_at);
+                        meta.textContent = source + (label ? (" | " + label) : "");
+
+                        const status = document.createElement("div");
+                        status.className = "notification-item-status status-" + (n.status || "pending");
+                        status.textContent = (n.status || "pending").toUpperCase();
+
+                        item.appendChild(title);
+                        item.appendChild(meta);
+                        item.appendChild(status);
+
+                        if (n.status === "pending") {
+                            const actions = document.createElement("div");
+                            actions.className = "notification-item-actions";
+
+                            const approveBtn = document.createElement("button");
+                            approveBtn.type = "button";
+                            approveBtn.className = "notification-approve-btn";
+                            approveBtn.textContent = "Approve";
+                            approveBtn.addEventListener("click", function () {
+                                decideNotification(n, "approve");
+                            });
+
+                            const denyBtn = document.createElement("button");
+                            denyBtn.type = "button";
+                            denyBtn.className = "notification-deny-btn";
+                            denyBtn.textContent = "Deny";
+                            denyBtn.addEventListener("click", function () {
+                                decideNotification(n, "deny");
+                            });
+
+                            actions.appendChild(approveBtn);
+                            actions.appendChild(denyBtn);
+                            item.appendChild(actions);
+                        }
+
+                        list.appendChild(item);
+                    });
+                }
+
+                function fetchNotifications() {
+                    if (isPolling) {
+                        return;
+                    }
+                    isPolling = true;
+
+                    fetch("{{ url_for('api_notifications_list') }}?status=all&limit=120", {
+                        method: "GET",
+                        credentials: "same-origin",
+                        headers: {
+                            "Accept": "application/json"
+                        }
+                    })
+                        .then(function (res) {
+                            if (!res.ok) {
+                                throw new Error("poll failed");
+                            }
+                            return res.json();
+                        })
+                        .then(function (payload) {
+                            if (!payload || !payload.ok) {
+                                return;
+                            }
+                            notifications = Array.isArray(payload.notifications) ? payload.notifications : [];
+                            updateBadge();
+                            renderList();
+                        })
+                        .catch(function () {
+                            return null;
+                        })
+                        .finally(function () {
+                            isPolling = false;
+                        });
+                }
+
+                function decideNotification(notification, decision) {
+                    fetch("/api/notifications/" + encodeURIComponent(String(notification.id)) + "/decision", {
+                        method: "POST",
+                        credentials: "same-origin",
+                        headers: {
+                            "Content-Type": "application/json",
+                            "Accept": "application/json"
+                        },
+                        body: JSON.stringify({ decision: decision })
+                    })
+                        .then(function (res) {
+                            return res.json().then(function (payload) {
+                                return { status: res.status, payload: payload };
+                            });
+                        })
+                        .then(function (result) {
+                            if (result.status < 200 || result.status >= 300 || !result.payload || !result.payload.ok) {
+                                throw new Error("decision failed");
+                            }
+
+                            notifications = notifications.map(function (n) {
+                                if (n.id === notification.id) {
+                                    return result.payload.notification || n;
+                                }
+                                return n;
+                            });
+
+                            updateBadge();
+                            renderList();
+
+                            if (decision === "approve") {
+                                const truck = encodeURIComponent(notification.truck_number || "");
+                                window.location.href = "{{ url_for('new_ticket') }}?approved_truck=" + truck;
+                            }
+                        })
+                        .catch(function () {
+                            return null;
+                        });
+                }
+
+                function togglePanel() {
+                    const isOpen = !panel.hidden;
+                    panel.hidden = isOpen;
+                    bellButton.setAttribute("aria-expanded", isOpen ? "false" : "true");
+                }
+
+                bellButton.addEventListener("click", function (event) {
+                    event.stopPropagation();
+                    togglePanel();
+                });
+
+                refreshButton.addEventListener("click", function () {
+                    fetchNotifications();
+                });
+
+                document.addEventListener("click", function (event) {
+                    if (panel.hidden) {
+                        return;
+                    }
+                    if (!panel.contains(event.target) && !bellButton.contains(event.target)) {
+                        panel.hidden = true;
+                        bellButton.setAttribute("aria-expanded", "false");
+                    }
+                });
+
+                fetchNotifications();
+                window.setInterval(fetchNotifications, 5000);
+            })();
+        </script>
+    {% endif %}
+    #}
 </body>
 </html>

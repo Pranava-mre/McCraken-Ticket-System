@@ -27,11 +27,12 @@ from flask import (
     session,
     url_for,
 )
-from reportlab.lib.pagesizes import letter
+from reportlab.lib.pagesizes import letter, landscape
 from reportlab.pdfgen import canvas
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph,Spacer
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.pdfbase.pdfmetrics import stringWidth
 from psycopg2 import IntegrityError
 from psycopg2.extras import RealDictCursor
 
@@ -98,6 +99,8 @@ AZURE_JOBS_CACHE_BLOB_NAME = os.getenv("AZURE_JOBS_CACHE_BLOB_NAME", "jobs_cache
 CREDIT_CARD_CUSTOMER_MATCH = os.getenv("CREDIT_CARD_CUSTOMER_MATCH", "credit card").strip() or "credit card"
 CREDIT_CARD_REPORT_API_KEY = os.getenv("CREDIT_CARD_REPORT_API_KEY", "").strip()
 CREDIT_CARD_REPORT_SAS_MINUTES = int(os.getenv("CREDIT_CARD_REPORT_SAS_MINUTES", "180").strip() or "180")
+RFID_EVENT_API_KEY = os.getenv("RFID_EVENT_API_KEY", "").strip()
+NOTIFICATIONS_ENABLED = os.getenv("NOTIFICATIONS_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def env_flag(name, default=False):
@@ -325,6 +328,22 @@ def format_ticket_datetime(value):
         except ValueError:
             return text
     return dt.strftime("%m-%d-%Y - %I:%M %p")
+
+
+def format_ticket_time(value):
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return ""
+        try:
+            dt = datetime.fromisoformat(text)
+        except ValueError:
+            return text
+    return dt.strftime("%I:%M %p")
 
 
 @app.template_filter("ticket_datetime")
@@ -564,6 +583,32 @@ def ensure_db_migrations(conn):
             )
             """
         )
+        # Notification schema is intentionally disabled for now, but kept in comments
+        # so this temporary feature can be restored quickly.
+        # cursor.execute(
+        #     """
+        #     CREATE TABLE IF NOT EXISTS rfid_notifications (
+        #         id BIGSERIAL PRIMARY KEY,
+        #         event_type TEXT NOT NULL DEFAULT 'known_truck_detected',
+        #         truck_number TEXT NOT NULL,
+        #         source TEXT NOT NULL DEFAULT 'rfid',
+        #         message TEXT NOT NULL,
+        #         detected_at TIMESTAMPTZ,
+        #         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        #         status TEXT NOT NULL DEFAULT 'pending',
+        #         decided_at TIMESTAMPTZ
+        #     )
+        #     """
+        # )
+        # cursor.execute("ALTER TABLE rfid_notifications ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending'")
+        # cursor.execute("ALTER TABLE rfid_notifications ADD COLUMN IF NOT EXISTS decided_at TIMESTAMPTZ")
+        # cursor.execute(
+        #     """
+        #     UPDATE rfid_notifications
+        #     SET status = 'pending'
+        #     WHERE status IS NULL OR status NOT IN ('pending', 'approved', 'denied')
+        #     """
+        # )
 
 
 def refresh_jobs_on_startup():
@@ -1011,6 +1056,33 @@ def fetch_credit_card_sales_rows(db, report_date, customer_match):
         return cursor.fetchall()
 
 
+def fetch_non_credit_card_sales_rows(db, report_date, customer_match):
+    like_value = f"%{customer_match}%"
+    with db.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT
+                t.ticket_number,
+                t.created_at,
+                t.customer_snapshot,
+                t.job_code_snapshot,
+                t.job_name_snapshot,
+                t.truck_number_snapshot,
+                t.material_name_snapshot,
+                t.quantity,
+                t.unit,
+                t.cost
+            FROM tickets t
+            WHERE COALESCE(t.active, TRUE) = TRUE
+              AND date(t.created_at) = date(%s)
+              AND COALESCE(t.customer_snapshot, '') NOT ILIKE %s
+            ORDER BY COALESCE(NULLIF(TRIM(t.customer_snapshot), ''), 'zzzzzz') ASC, t.created_at ASC, t.id ASC
+            """,
+            (report_date.isoformat(), like_value),
+        )
+        return cursor.fetchall()
+
+
 def credit_card_daily_report_to_pdf_bytes(rows, report_date, customer_match):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter)
@@ -1086,6 +1158,117 @@ def credit_card_daily_report_to_pdf_bytes(rows, report_date, customer_match):
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
     ]))
     elements.append(table)
+
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer.read()
+
+
+def non_credit_card_daily_report_to_pdf_bytes(rows, report_date, customer_match):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(letter),
+        leftMargin=24,
+        rightMargin=24,
+        topMargin=24,
+        bottomMargin=24,
+    )
+
+    styles = getSampleStyleSheet()
+    normal = styles["Normal"]
+    heading = styles["Heading2"]
+    subheading = styles["Heading3"]
+
+    elements = []
+    elements.append(Paragraph("Daily Non-Credit Card Sales Report", heading))
+    elements.append(Paragraph(f"Report Date: {report_date.strftime('%m/%d/%Y')}", normal))
+    elements.append(Paragraph(f"Excluding customer match: {customer_match}", normal))
+    elements.append(Paragraph(f"Generated: {app_now().strftime('%m/%d/%Y %I:%M %p %Z')}", normal))
+    elements.append(Spacer(1, 12))
+
+    if not rows:
+        elements.append(Paragraph("No non-credit-card sales for this day.", subheading))
+        doc.build(elements)
+        buffer.seek(0)
+        return buffer.read()
+
+    total_amount = sum(float(r.get("cost") or 0) for r in rows)
+    total_count = len(rows)
+    grouped_rows = {}
+
+    for row in rows:
+        customer_name = str(row.get("customer_snapshot") or "").strip() or "(No Customer)"
+        grouped_rows.setdefault(customer_name, []).append(row)
+
+    elements.append(Paragraph(f"Total transactions: {total_count}", normal))
+    elements.append(Paragraph(f"Total amount: ${total_amount:.2f}", normal))
+    elements.append(Paragraph(f"Total customers: {len(grouped_rows)}", normal))
+    elements.append(Spacer(1, 10))
+
+    col_widths = [100, 260, 90, 210, 70]
+
+    def clip_to_width(value, width_points, font_name="Helvetica", font_size=9):
+        text = str(value or "")
+        if not text:
+            return ""
+
+        # Keep a little padding so clipped text never touches or spills grid lines.
+        usable_width = max(8, float(width_points) - 8)
+        if stringWidth(text, font_name, font_size) <= usable_width:
+            return text
+
+        while text and stringWidth(text, font_name, font_size) > usable_width:
+            text = text[:-1]
+        return text
+
+    for customer_name in sorted(grouped_rows.keys(), key=lambda x: x.lower()):
+        customer_rows = grouped_rows[customer_name]
+        customer_total = sum(float(r.get("cost") or 0) for r in customer_rows)
+
+        elements.append(Paragraph(f"Customer: {customer_name}", subheading))
+        elements.append(Paragraph(f"Transactions: {len(customer_rows)} | Total amount: ${customer_total:.2f}", normal))
+        elements.append(Spacer(1, 6))
+
+        table_data = [[
+            "Time",
+            "Job",
+            "Truck",
+            "Material",
+            "Cost",
+        ]]
+
+        for row in customer_rows:
+            job_text = " - ".join(
+                part for part in [
+                    str(row.get("job_code_snapshot") or "").strip(),
+                    str(row.get("job_name_snapshot") or "").strip(),
+                ]
+                if part
+            )
+            table_data.append([
+                clip_to_width(format_ticket_time(row.get("created_at")), col_widths[0]),
+                clip_to_width(job_text, col_widths[1]),
+                clip_to_width(str(row.get("truck_number_snapshot") or ""), col_widths[2]),
+                clip_to_width(str(row.get("material_name_snapshot") or ""), col_widths[3]),
+                f"${float(row.get('cost') or 0):.2f}",
+            ])
+
+        table = Table(
+            table_data,
+            colWidths=col_widths,
+            repeatRows=1,
+        )
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("GRID", (0, 0), (-1, -1), 1, colors.black),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("ALIGN", (4, 1), (4, -1), "RIGHT"),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]))
+        elements.append(table)
+        elements.append(Spacer(1, 12))
 
     doc.build(elements)
     buffer.seek(0)
@@ -1863,11 +2046,273 @@ def require_login():
     if request.endpoint is None:
         return
 
-    open_endpoints = {"login", "logout", "static", "healthz", "api_credit_card_daily_report"}
+    open_endpoints = {
+        "login",
+        "logout",
+        "static",
+        "healthz",
+        "api_credit_card_daily_report",
+        "api_non_credit_card_daily_report",
+        "api_notification_truck_seen",
+    }
     if request.endpoint in open_endpoints:
         return
     if not session.get("logged_in"):
         return redirect(url_for("login", next=request.url))
+
+
+def parse_iso_datetime(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    return datetime.fromisoformat(text)
+
+
+@app.post("/api/notifications/truck-seen")
+def api_notification_truck_seen():
+    if not NOTIFICATIONS_ENABLED:
+        return {"ok": False, "error": "Notifications are temporarily disabled."}, 503
+
+    provided_key = (request.headers.get("X-API-Key") or request.args.get("api_key") or "").strip()
+    if RFID_EVENT_API_KEY:
+        if not hmac.compare_digest(provided_key, RFID_EVENT_API_KEY):
+            return {"ok": False, "error": "Unauthorized."}, 401
+    else:
+        forwarded_for = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+        remote_ip = forwarded_for or (request.remote_addr or "")
+        if remote_ip not in {"127.0.0.1", "::1", "localhost"}:
+            return {
+                "ok": False,
+                "error": "RFID_EVENT_API_KEY is not configured. Configure it or call from localhost.",
+            }, 401
+
+    body = request.get_json(silent=True) if request.is_json else {}
+    body = body or {}
+
+    truck_number = str(body.get("truck_number") or request.form.get("truck_number") or "").strip()
+    source = str(body.get("source") or request.form.get("source") or "rfid").strip() or "rfid"
+    custom_message = str(body.get("message") or request.form.get("message") or "").strip()
+    detected_at_raw = str(body.get("detected_at") or request.form.get("detected_at") or "").strip()
+
+    if not truck_number:
+        return {"ok": False, "error": "truck_number is required."}, 400
+
+    detected_at = None
+    if detected_at_raw:
+        try:
+            detected_at = parse_iso_datetime(detected_at_raw)
+        except ValueError:
+            return {"ok": False, "error": "Invalid detected_at. Use ISO-8601 format."}, 400
+
+    db = get_db()
+    with db.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT id, truck_number
+            FROM trucks_main
+            WHERE active = TRUE AND LOWER(TRIM(truck_number)) = LOWER(TRIM(%s))
+            LIMIT 1
+            """,
+            (truck_number,),
+        )
+        truck = cursor.fetchone()
+
+    if not truck:
+        return {"ok": False, "error": "Truck is not active/known in trucks list."}, 404
+
+    normalized_truck_number = str(truck.get("truck_number") or truck_number).strip() or truck_number
+    message = custom_message or f"Known truck appeared: {normalized_truck_number}"
+
+    try:
+        with db.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO rfid_notifications (event_type, truck_number, source, message, detected_at)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id, status, created_at
+                """,
+                ("known_truck_detected", normalized_truck_number, source, message, detected_at),
+            )
+            created = cursor.fetchone()
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        return {"ok": False, "error": f"Could not store notification: {exc}"}, 500
+
+    created_at = created.get("created_at")
+    return {
+        "ok": True,
+        "notification": {
+            "id": int(created.get("id") or 0),
+            "event_type": "known_truck_detected",
+            "truck_number": normalized_truck_number,
+            "source": source,
+            "message": message,
+            "status": created.get("status") or "pending",
+            "detected_at": detected_at.isoformat() if detected_at else None,
+            "created_at": created_at.isoformat() if created_at else None,
+        },
+    }, 201
+
+
+def serialize_notification_row(row):
+    detected_at = row.get("detected_at")
+    created_at = row.get("created_at")
+    decided_at = row.get("decided_at")
+    return {
+        "id": int(row.get("id") or 0),
+        "event_type": row.get("event_type") or "known_truck_detected",
+        "truck_number": row.get("truck_number") or "",
+        "source": row.get("source") or "rfid",
+        "message": row.get("message") or "",
+        "status": row.get("status") or "pending",
+        "detected_at": detected_at.isoformat() if detected_at else None,
+        "created_at": created_at.isoformat() if created_at else None,
+        "decided_at": decided_at.isoformat() if decided_at else None,
+    }
+
+
+@app.get("/api/notifications/poll")
+def api_notifications_poll():
+    if not NOTIFICATIONS_ENABLED:
+        return {"ok": False, "error": "Notifications are temporarily disabled."}, 503
+
+    since_id_raw = str(request.args.get("since_id") or "0").strip()
+    limit_raw = str(request.args.get("limit") or "20").strip()
+
+    try:
+        since_id = max(0, int(since_id_raw))
+    except ValueError:
+        return {"ok": False, "error": "Invalid since_id."}, 400
+
+    try:
+        limit = int(limit_raw)
+    except ValueError:
+        return {"ok": False, "error": "Invalid limit."}, 400
+
+    limit = max(1, min(limit, 100))
+
+    db = get_db()
+    with db.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT id, event_type, truck_number, source, message, status, detected_at, created_at, decided_at
+            FROM rfid_notifications
+            WHERE id > %s
+            ORDER BY id ASC
+            LIMIT %s
+            """,
+            (since_id, limit),
+        )
+        rows = cursor.fetchall()
+
+    notifications = []
+    latest_id = since_id
+    for row in rows:
+        row_id = int(row.get("id") or 0)
+        latest_id = max(latest_id, row_id)
+        notifications.append(serialize_notification_row(row))
+
+    return {"ok": True, "notifications": notifications, "latest_id": latest_id}, 200
+
+
+@app.get("/api/notifications/list")
+def api_notifications_list():
+    if not NOTIFICATIONS_ENABLED:
+        return {"ok": False, "error": "Notifications are temporarily disabled."}, 503
+
+    status = str(request.args.get("status") or "all").strip().lower()
+    limit_raw = str(request.args.get("limit") or "100").strip()
+
+    try:
+        limit = int(limit_raw)
+    except ValueError:
+        return {"ok": False, "error": "Invalid limit."}, 400
+
+    limit = max(1, min(limit, 300))
+
+    where_sql = ""
+    params = []
+    if status in {"pending", "approved", "denied"}:
+        where_sql = "WHERE status = %s"
+        params.append(status)
+    elif status != "all":
+        return {"ok": False, "error": "Invalid status. Use all, pending, approved, or denied."}, 400
+
+    query = (
+        "SELECT id, event_type, truck_number, source, message, status, detected_at, created_at, decided_at "
+        f"FROM rfid_notifications {where_sql} "
+        "ORDER BY id DESC LIMIT %s"
+    )
+    params.append(limit)
+
+    db = get_db()
+    with db.cursor() as cursor:
+        cursor.execute(query, tuple(params))
+        rows = cursor.fetchall()
+
+    notifications = [serialize_notification_row(row) for row in rows]
+
+    with db.cursor() as cursor:
+        cursor.execute("SELECT COUNT(1) AS pending_count FROM rfid_notifications WHERE status = 'pending'")
+        count_row = cursor.fetchone() or {}
+    pending_count = int(count_row.get("pending_count") or 0)
+
+    return {"ok": True, "notifications": notifications, "pending_count": pending_count}, 200
+
+
+@app.post("/api/notifications/<int:notification_id>/decision")
+def api_notifications_decision(notification_id):
+    if not NOTIFICATIONS_ENABLED:
+        return {"ok": False, "error": "Notifications are temporarily disabled."}, 503
+
+    body = request.get_json(silent=True) if request.is_json else {}
+    body = body or {}
+    decision = str(body.get("decision") or request.form.get("decision") or "").strip().lower()
+    if decision not in {"approve", "deny", "approved", "denied"}:
+        return {"ok": False, "error": "decision must be approve or deny."}, 400
+
+    target_status = "approved" if decision in {"approve", "approved"} else "denied"
+    db = get_db()
+    with db.cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE rfid_notifications
+            SET status = %s,
+                decided_at = NOW()
+            WHERE id = %s
+              AND status = 'pending'
+            RETURNING id, event_type, truck_number, source, message, status, detected_at, created_at, decided_at
+            """,
+            (target_status, notification_id),
+        )
+        row = cursor.fetchone()
+
+    if not row:
+        db.rollback()
+        with db.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, event_type, truck_number, source, message, status, detected_at, created_at, decided_at
+                FROM rfid_notifications
+                WHERE id = %s
+                LIMIT 1
+                """,
+                (notification_id,),
+            )
+            existing = cursor.fetchone()
+        if not existing:
+            return {"ok": False, "error": "Notification not found."}, 404
+        return {
+            "ok": False,
+            "error": f"Notification already {existing.get('status') or 'processed'}.",
+            "notification": serialize_notification_row(existing),
+        }, 409
+
+    db.commit()
+    return {"ok": True, "notification": serialize_notification_row(row)}, 200
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -3077,6 +3522,85 @@ def api_credit_card_daily_report():
         "ok": True,
         "report_date": report_date.isoformat(),
         "customer_match": CREDIT_CARD_CUSTOMER_MATCH,
+        "transactions": len(rows),
+        "total_cost": round(sum(float(r.get("cost") or 0) for r in rows), 2),
+        "pdf_filename": filename,
+        "blob_url": blob_url,
+        "sas_url": sas_url,
+        "sas_expires_at_utc": sas_expires_at_utc,
+        "sas_minutes": sas_minutes,
+    }, 200
+
+
+@app.post("/reports/non-credit-card/daily")
+@app.post("/api/reports/non-credit-card/daily")
+def api_non_credit_card_daily_report():
+    expected_key = CREDIT_CARD_REPORT_API_KEY
+    provided_key = (request.headers.get("X-API-Key") or request.args.get("api_key") or "").strip()
+
+    if not expected_key:
+        return {"ok": False, "error": "CREDIT_CARD_REPORT_API_KEY is not configured."}, 503
+    if not hmac.compare_digest(provided_key, expected_key):
+        return {"ok": False, "error": "Unauthorized."}, 401
+
+    body = request.get_json(silent=True) if request.is_json else {}
+    body = body or {}
+
+    report_date_raw = str(body.get("report_date") or request.args.get("report_date") or "").strip()
+    sas_minutes_raw = str(body.get("sas_minutes") or request.args.get("sas_minutes") or CREDIT_CARD_REPORT_SAS_MINUTES).strip()
+
+    report_date = app_now().date()
+    if report_date_raw:
+        try:
+            report_date = datetime.fromisoformat(report_date_raw).date()
+        except ValueError:
+            return {"ok": False, "error": "Invalid report_date. Use YYYY-MM-DD."}, 400
+
+    try:
+        sas_minutes = int(sas_minutes_raw)
+    except ValueError:
+        return {"ok": False, "error": "Invalid sas_minutes. Use an integer."}, 400
+
+    db = get_db()
+    rows = fetch_non_credit_card_sales_rows(db, report_date, CREDIT_CARD_CUSTOMER_MATCH)
+    pdf_bytes = non_credit_card_daily_report_to_pdf_bytes(rows, report_date, CREDIT_CARD_CUSTOMER_MATCH)
+    stamp = app_now().strftime("%Y%m%d_%H%M%S")
+    filename = f"non_credit_card_sales_{report_date.strftime('%Y%m%d')}_{stamp}.pdf"
+
+    if not AZURE_STORAGE_CONNECTION_STRING:
+        return {"ok": False, "error": "AZURE_STORAGE_CONNECTION_STRING is not configured."}, 503
+
+    blob_name = f"{AZURE_REPORTS_BLOB_PREFIX}/{filename}" if AZURE_REPORTS_BLOB_PREFIX else filename
+    try:
+        blob_url = upload_pdf_to_blob(blob_name, pdf_bytes)
+    except Exception as exc:
+        return {"ok": False, "error": f"Blob upload failed: {exc}"}, 500
+
+    if not blob_url:
+        return {"ok": False, "error": "Blob upload failed: no blob URL returned."}, 500
+
+    try:
+        sas_url, sas_expires_at_utc = generate_blob_read_sas_url(blob_name, sas_minutes)
+    except Exception as exc:
+        return {"ok": False, "error": f"SAS generation failed: {exc}"}, 500
+
+    try:
+        upload_download_audit_blob(
+            category="reports_pdf_non_credit_card",
+            filename=filename,
+            file_bytes=pdf_bytes,
+            mimetype="application/pdf",
+        )
+    except Exception as exc:
+        app.logger.warning("Could not audit-upload API non-credit-card report PDF: %s", exc)
+
+    customers = sorted({str(r.get("customer_snapshot") or "").strip() or "(No Customer)" for r in rows}, key=lambda x: x.lower())
+    return {
+        "ok": True,
+        "report_date": report_date.isoformat(),
+        "excluded_customer_match": CREDIT_CARD_CUSTOMER_MATCH,
+        "customers": customers,
+        "customer_count": len(customers),
         "transactions": len(rows),
         "total_cost": round(sum(float(r.get("cost") or 0) for r in rows), 2),
         "pdf_filename": filename,
