@@ -346,6 +346,14 @@ def format_ticket_time(value):
     return dt.strftime("%I:%M %p")
 
 
+def format_currency(value):
+    try:
+        amount = float(value or 0)
+    except (TypeError, ValueError):
+        amount = 0.0
+    return f"${amount:,.2f}"
+
+
 @app.template_filter("ticket_datetime")
 def ticket_datetime_filter(value):
     return format_ticket_datetime(value)
@@ -1109,7 +1117,7 @@ def credit_card_daily_report_to_pdf_bytes(rows, report_date, customer_match):
     total_count = len(rows)
 
     elements.append(Paragraph(f"Total transactions: {total_count}", normal))
-    elements.append(Paragraph(f"Total amount: ${total_amount:.2f}", normal))
+    elements.append(Paragraph(f"Total amount: {format_currency(total_amount)}", normal))
     elements.append(Spacer(1, 10))
 
     table_data = [[
@@ -1141,7 +1149,7 @@ def credit_card_daily_report_to_pdf_bytes(rows, report_date, customer_match):
             str(row.get("material_name_snapshot") or ""),
             f"{float(row.get('quantity') or 0):.2f}",
             str(row.get("unit") or ""),
-            f"${float(row.get('cost') or 0):.2f}",
+            format_currency(row.get("cost")),
         ])
 
     table = Table(
@@ -1221,7 +1229,7 @@ def non_credit_card_daily_report_to_pdf_bytes(rows, report_start_date, report_en
             external_grouped_rows.setdefault(customer_name, []).append(row)
 
     elements.append(Paragraph(f"Total transactions: {total_count}", normal))
-    elements.append(Paragraph(f"Total amount: ${total_amount:.2f}", normal))
+    elements.append(Paragraph(f"Total amount: {format_currency(total_amount)}", normal))
     elements.append(Paragraph(f"Total customers: {len(external_grouped_rows) + len(internal_grouped_rows)}", normal))
     elements.append(Spacer(1, 10))
 
@@ -1251,7 +1259,7 @@ def non_credit_card_daily_report_to_pdf_bytes(rows, report_start_date, report_en
 
         elements.append(Paragraph("Section 1: Non-MREX / Non-Petty Group / Non-Redcon", subheading))
         elements.append(Paragraph(f"Customer: {customer_name}", subheading))
-        elements.append(Paragraph(f"Transactions: {len(customer_rows)} | Total amount: ${customer_total:.2f}", normal))
+        elements.append(Paragraph(f"Transactions: {len(customer_rows)} | Total amount: {format_currency(customer_total)}", normal))
         elements.append(Spacer(1, 6))
 
         table_data = [["Date/Time", "Job", "Truck", "Material", "Cost"]]
@@ -1269,7 +1277,7 @@ def non_credit_card_daily_report_to_pdf_bytes(rows, report_start_date, report_en
                 clip_to_width(job_text, col_widths[1]),
                 clip_to_width(str(row.get("truck_number_snapshot") or ""), col_widths[2]),
                 clip_to_width(str(row.get("material_name_snapshot") or ""), col_widths[3]),
-                f"${float(row.get('cost') or 0):.2f}",
+                format_currency(row.get("cost")),
             ])
 
         table = Table(table_data, colWidths=col_widths, repeatRows=1)
@@ -1303,7 +1311,7 @@ def non_credit_card_daily_report_to_pdf_bytes(rows, report_start_date, report_en
         elements.append(Paragraph("Section 2: MREX / Petty Group / Redcon (Grouped by Job)", subheading))
         elements.append(Paragraph(f"Customer: {customer_name}", subheading))
         elements.append(Paragraph(f"Job: {job_code} - {job_name}", subheading))
-        elements.append(Paragraph(f"Transactions: {len(job_rows)} | Total amount: ${job_total:.2f}", normal))
+        elements.append(Paragraph(f"Transactions: {len(job_rows)} | Total amount: {format_currency(job_total)}", normal))
         elements.append(Spacer(1, 6))
 
         job_col_widths = [100, 100, 260, 70]
@@ -1313,7 +1321,7 @@ def non_credit_card_daily_report_to_pdf_bytes(rows, report_start_date, report_en
                 clip_to_width(format_ticket_datetime(row.get("created_at")), job_col_widths[0]),
                 clip_to_width(str(row.get("truck_number_snapshot") or ""), job_col_widths[1]),
                 clip_to_width(str(row.get("material_name_snapshot") or ""), job_col_widths[2]),
-                f"${float(row.get('cost') or 0):.2f}",
+                format_currency(row.get("cost")),
             ])
 
         table = Table(table_data, colWidths=job_col_widths, repeatRows=1)
