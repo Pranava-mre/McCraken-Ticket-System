@@ -1233,7 +1233,7 @@ def non_credit_card_daily_report_to_pdf_bytes(rows, report_start_date, report_en
     elements.append(Paragraph(f"Total customers: {len(external_grouped_rows) + len(internal_grouped_rows)}", normal))
     elements.append(Spacer(1, 10))
 
-    col_widths = [100, 260, 90, 210, 70]
+    col_widths = [90, 95, 220, 80, 180, 65]
 
     def clip_to_width(value, width_points, font_name="Helvetica", font_size=9):
         text = str(value or "")
@@ -1262,7 +1262,7 @@ def non_credit_card_daily_report_to_pdf_bytes(rows, report_start_date, report_en
         elements.append(Paragraph(f"Transactions: {len(customer_rows)} | Total amount: {format_currency(customer_total)}", normal))
         elements.append(Spacer(1, 6))
 
-        table_data = [["Date/Time", "Job", "Truck", "Material", "Cost"]]
+        table_data = [["Date/Time", "Ticket #", "Job", "Truck", "Material", "Cost"]]
         for row in customer_rows:
             job_text = " - ".join(
                 part
@@ -1274,9 +1274,10 @@ def non_credit_card_daily_report_to_pdf_bytes(rows, report_start_date, report_en
             )
             table_data.append([
                 clip_to_width(format_ticket_datetime(row.get("created_at")), col_widths[0]),
-                clip_to_width(job_text, col_widths[1]),
-                clip_to_width(str(row.get("truck_number_snapshot") or ""), col_widths[2]),
-                clip_to_width(str(row.get("material_name_snapshot") or ""), col_widths[3]),
+                clip_to_width(str(row.get("ticket_number") or "").strip() or "-", col_widths[1]),
+                clip_to_width(job_text, col_widths[2]),
+                clip_to_width(str(row.get("truck_number_snapshot") or ""), col_widths[3]),
+                clip_to_width(str(row.get("material_name_snapshot") or ""), col_widths[4]),
                 format_currency(row.get("cost")),
             ])
 
@@ -1286,7 +1287,7 @@ def non_credit_card_daily_report_to_pdf_bytes(rows, report_start_date, report_en
             ("GRID", (0, 0), (-1, -1), 1, colors.black),
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
             ("FONTSIZE", (0, 0), (-1, -1), 9),
-            ("ALIGN", (4, 1), (4, -1), "RIGHT"),
+            ("ALIGN", (5, 1), (5, -1), "RIGHT"),
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ]))
         elements.append(table)
@@ -1314,13 +1315,14 @@ def non_credit_card_daily_report_to_pdf_bytes(rows, report_start_date, report_en
         elements.append(Paragraph(f"Transactions: {len(job_rows)} | Total amount: {format_currency(job_total)}", normal))
         elements.append(Spacer(1, 6))
 
-        job_col_widths = [100, 100, 260, 70]
-        table_data = [["Date/Time", "Truck", "Material", "Cost"]]
+        job_col_widths = [95, 110, 95, 230, 70]
+        table_data = [["Date/Time", "Ticket #", "Truck", "Material", "Cost"]]
         for row in job_rows:
             table_data.append([
                 clip_to_width(format_ticket_datetime(row.get("created_at")), job_col_widths[0]),
-                clip_to_width(str(row.get("truck_number_snapshot") or ""), job_col_widths[1]),
-                clip_to_width(str(row.get("material_name_snapshot") or ""), job_col_widths[2]),
+                clip_to_width(str(row.get("ticket_number") or "").strip() or "-", job_col_widths[1]),
+                clip_to_width(str(row.get("truck_number_snapshot") or ""), job_col_widths[2]),
+                clip_to_width(str(row.get("material_name_snapshot") or ""), job_col_widths[3]),
                 format_currency(row.get("cost")),
             ])
 
@@ -1330,7 +1332,204 @@ def non_credit_card_daily_report_to_pdf_bytes(rows, report_start_date, report_en
             ("GRID", (0, 0), (-1, -1), 1, colors.black),
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
             ("FONTSIZE", (0, 0), (-1, -1), 9),
-            ("ALIGN", (3, 1), (3, -1), "RIGHT"),
+            ("ALIGN", (4, 1), (4, -1), "RIGHT"),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]))
+        elements.append(table)
+
+    for customer_name in internal_customers:
+        job_groups = internal_grouped_rows[customer_name]
+        sorted_jobs = sorted(job_groups.keys(), key=lambda key: ((key[0] or "").lower(), (key[1] or "").lower()))
+        for job_key in sorted_jobs:
+            if first_detail_page:
+                first_detail_page = False
+            else:
+                elements.append(PageBreak())
+            append_internal_job_page(customer_name, job_key, job_groups[job_key])
+
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer.read()
+
+
+def customer_grouped_report_to_pdf_bytes(rows, filters):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(letter),
+        leftMargin=24,
+        rightMargin=24,
+        topMargin=24,
+        bottomMargin=24,
+    )
+
+    styles = getSampleStyleSheet()
+    normal = styles["Normal"]
+    heading = styles["Heading2"]
+    subheading = styles["Heading3"]
+
+    def _v(value):
+        return str(value or "").strip()
+
+    date_from = _v(filters.get("date_from"))
+    date_to = _v(filters.get("date_to"))
+    direction = _v(filters.get("direction"))
+    job_label = _v(filters.get("job_label"))
+    customer = _v(filters.get("customer"))
+    material_label = _v(filters.get("material_label"))
+
+    elements = []
+    elements.append(Paragraph("Customer Grouped Sales Report", heading))
+    elements.append(Paragraph(f"Generated: {app_now().strftime('%m/%d/%Y %I:%M %p %Z')}", normal))
+
+    applied_filters = []
+    if date_from or date_to:
+        applied_filters.append(f"Date: {date_from or 'Any'} to {date_to or 'Any'}")
+    if direction:
+        applied_filters.append(f"Direction: {direction}")
+    if job_label:
+        applied_filters.append(f"Job: {job_label}")
+    if customer:
+        applied_filters.append(f"Customer contains: {customer}")
+    if material_label:
+        applied_filters.append(f"Material: {material_label}")
+
+    if applied_filters:
+        for filter_line in applied_filters:
+            elements.append(Paragraph(filter_line, normal))
+    else:
+        elements.append(Paragraph("Filters: None (all active tickets)", normal))
+
+    elements.append(Spacer(1, 12))
+
+    if not rows:
+        elements.append(Paragraph("No matching tickets for selected filters.", subheading))
+        doc.build(elements)
+        buffer.seek(0)
+        return buffer.read()
+
+    total_amount = sum(float(r.get("cost") or 0) for r in rows)
+    total_count = len(rows)
+
+    def normalize_customer_name(value):
+        return " ".join(str(value or "").strip().lower().split())
+
+    our_customers = {"mrex", "petty group", "redcon"}
+    external_grouped_rows = {}
+    internal_grouped_rows = {}
+
+    for row in rows:
+        customer_name = str(row.get("customer_snapshot") or "").strip() or "(No Customer)"
+        customer_key = normalize_customer_name(customer_name)
+
+        if customer_key in our_customers:
+            job_code = str(row.get("job_code_snapshot") or "").strip()
+            job_name = str(row.get("job_name_snapshot") or "").strip()
+            job_key = (job_code, job_name)
+            internal_grouped_rows.setdefault(customer_name, {}).setdefault(job_key, []).append(row)
+        else:
+            external_grouped_rows.setdefault(customer_name, []).append(row)
+
+    elements.append(Paragraph(f"Total transactions: {total_count}", normal))
+    elements.append(Paragraph(f"Total amount: {format_currency(total_amount)}", normal))
+    elements.append(Paragraph(f"Total customers: {len(external_grouped_rows) + len(internal_grouped_rows)}", normal))
+    elements.append(Spacer(1, 10))
+
+    col_widths = [90, 95, 220, 80, 180, 65]
+
+    def clip_to_width(value, width_points, font_name="Helvetica", font_size=9):
+        text = str(value or "")
+        if not text:
+            return ""
+
+        usable_width = max(8, float(width_points) - 8)
+        if stringWidth(text, font_name, font_size) <= usable_width:
+            return text
+
+        while text and stringWidth(text, font_name, font_size) > usable_width:
+            text = text[:-1]
+        return text
+
+    external_customers = sorted(external_grouped_rows.keys(), key=lambda x: x.lower())
+    first_detail_page = True
+
+    def append_external_customer_page(customer_name, customer_rows):
+        customer_total = sum(float(r.get("cost") or 0) for r in customer_rows)
+
+        elements.append(Paragraph("Section 1: Non-MREX / Non-Petty Group / Non-Redcon", subheading))
+        elements.append(Paragraph(f"Customer: {customer_name}", subheading))
+        elements.append(Paragraph(f"Transactions: {len(customer_rows)} | Total amount: {format_currency(customer_total)}", normal))
+        elements.append(Spacer(1, 6))
+
+        table_data = [["Date/Time", "Ticket #", "Job", "Truck", "Material", "Cost"]]
+        for row in customer_rows:
+            job_text = " - ".join(
+                part
+                for part in [
+                    str(row.get("job_code_snapshot") or "").strip(),
+                    str(row.get("job_name_snapshot") or "").strip(),
+                ]
+                if part
+            )
+            table_data.append([
+                clip_to_width(format_ticket_datetime(row.get("created_at")), col_widths[0]),
+                clip_to_width(str(row.get("ticket_number") or "").strip() or "-", col_widths[1]),
+                clip_to_width(job_text, col_widths[2]),
+                clip_to_width(str(row.get("truck_number_snapshot") or ""), col_widths[3]),
+                clip_to_width(str(row.get("material_name_snapshot") or ""), col_widths[4]),
+                format_currency(row.get("cost")),
+            ])
+
+        table = Table(table_data, colWidths=col_widths, repeatRows=1)
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("GRID", (0, 0), (-1, -1), 1, colors.black),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("ALIGN", (5, 1), (5, -1), "RIGHT"),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]))
+        elements.append(table)
+
+    for customer_name in external_customers:
+        if first_detail_page:
+            first_detail_page = False
+        else:
+            elements.append(PageBreak())
+        append_external_customer_page(customer_name, external_grouped_rows[customer_name])
+
+    internal_customers = sorted(internal_grouped_rows.keys(), key=lambda x: x.lower())
+
+    def append_internal_job_page(customer_name, job_key, job_rows):
+        job_code, job_name = job_key
+        job_code = job_code or "(No Job Code)"
+        job_name = job_name or "(No Job Name)"
+        job_total = sum(float(r.get("cost") or 0) for r in job_rows)
+
+        elements.append(Paragraph("Section 2: MREX / Petty Group / Redcon (Grouped by Job)", subheading))
+        elements.append(Paragraph(f"Customer: {customer_name}", subheading))
+        elements.append(Paragraph(f"Job: {job_code} - {job_name}", subheading))
+        elements.append(Paragraph(f"Transactions: {len(job_rows)} | Total amount: {format_currency(job_total)}", normal))
+        elements.append(Spacer(1, 6))
+
+        job_col_widths = [95, 110, 95, 230, 70]
+        table_data = [["Date/Time", "Ticket #", "Truck", "Material", "Cost"]]
+        for row in job_rows:
+            table_data.append([
+                clip_to_width(format_ticket_datetime(row.get("created_at")), job_col_widths[0]),
+                clip_to_width(str(row.get("ticket_number") or "").strip() or "-", job_col_widths[1]),
+                clip_to_width(str(row.get("truck_number_snapshot") or ""), job_col_widths[2]),
+                clip_to_width(str(row.get("material_name_snapshot") or ""), job_col_widths[3]),
+                format_currency(row.get("cost")),
+            ])
+
+        table = Table(table_data, colWidths=job_col_widths, repeatRows=1)
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("GRID", (0, 0), (-1, -1), 1, colors.black),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("ALIGN", (4, 1), (4, -1), "RIGHT"),
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ]))
         elements.append(table)
@@ -3851,6 +4050,140 @@ def print_reports():
         mimetype="application/pdf",
         as_attachment=True,
         download_name=pdf_path.name,
+    )
+
+
+@app.get("/reports/print-customer")
+def print_customer_reports():
+    db = get_db()
+
+    date_from = request.args.get("date_from", "")
+    date_to = request.args.get("date_to", "")
+    direction = request.args.get("direction", "")
+    job_id = request.args.get("job_id", "")
+    customer = request.args.get("customer", "").strip()
+    material_id = request.args.get("material_id", "")
+
+    where = ["COALESCE(t.active, TRUE)=TRUE"]
+    params = []
+
+    if date_from:
+        where.append("date(t.created_at)>=date(%s)")
+        params.append(date_from)
+
+    if date_to:
+        where.append("date(t.created_at)<=date(%s)")
+        params.append(date_to)
+
+    if direction in {"IN", "OUT"}:
+        where.append("t.direction=%s")
+        params.append(direction)
+
+    if job_id:
+        where.append("t.job_id=%s")
+        params.append(job_id)
+
+    if customer:
+        where.append("t.customer_snapshot ILIKE %s")
+        params.append(f"%{customer}%")
+
+    if material_id:
+        where.append("t.material_id=%s")
+        params.append(material_id)
+
+    where_sql = " AND ".join(where)
+
+    with db.cursor() as cursor:
+        cursor.execute(
+            f"""
+            SELECT
+                t.ticket_number,
+                t.created_at,
+                t.customer_snapshot,
+                t.job_code_snapshot,
+                t.job_name_snapshot,
+                t.truck_number_snapshot,
+                t.material_name_snapshot,
+                t.cost
+            FROM tickets t
+            WHERE {where_sql}
+            ORDER BY COALESCE(NULLIF(TRIM(t.customer_snapshot), ''), 'zzzzzz') ASC, t.created_at ASC, t.id ASC
+            """,
+            tuple(params),
+        )
+        rows = cursor.fetchall()
+
+    job_label = ""
+    if job_id:
+        with db.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT job_code, job_name
+                FROM jobs_cache
+                WHERE id=%s
+                LIMIT 1
+                """,
+                (job_id,),
+            )
+            job_row = cursor.fetchone()
+            if job_row:
+                job_code = str(job_row.get("job_code") or "").strip()
+                job_name = str(job_row.get("job_name") or "").strip()
+                job_label = " - ".join([p for p in [job_code, job_name] if p])
+
+    material_label = ""
+    if material_id:
+        with db.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT material_name
+                FROM materials_main
+                WHERE id=%s
+                LIMIT 1
+                """,
+                (material_id,),
+            )
+            material_row = cursor.fetchone()
+            if material_row:
+                material_label = str(material_row.get("material_name") or "").strip()
+
+    pdf_bytes = customer_grouped_report_to_pdf_bytes(
+        rows,
+        {
+            "date_from": date_from,
+            "date_to": date_to,
+            "direction": direction,
+            "job_label": job_label,
+            "customer": customer,
+            "material_label": material_label,
+        },
+    )
+
+    stamp = app_now().strftime("%Y%m%d_%H%M%S")
+    report_filename = f"customer_grouped_report_{stamp}.pdf"
+
+    if AZURE_STORAGE_CONNECTION_STRING:
+        blob_name = f"{AZURE_REPORTS_BLOB_PREFIX}/{report_filename}" if AZURE_REPORTS_BLOB_PREFIX else report_filename
+        try:
+            upload_pdf_to_blob(blob_name, pdf_bytes)
+        except Exception as exc:
+            app.logger.warning("Azure Blob upload failed for customer report %s: %s", report_filename, exc)
+
+    try:
+        upload_download_audit_blob(
+            category="reports_pdf_customer_grouped",
+            filename=report_filename,
+            file_bytes=pdf_bytes,
+            mimetype="application/pdf",
+        )
+    except Exception as exc:
+        app.logger.warning("Could not audit-upload customer grouped report PDF download: %s", exc)
+
+    return send_file(
+        io.BytesIO(pdf_bytes),
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=report_filename,
     )
 
 
