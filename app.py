@@ -1,12 +1,13 @@
 import io
 import os
 import csv
+import json
 import re
 import hmac
 import time
 import threading
 from contextlib import closing
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from datetime import timedelta
 from urllib.parse import parse_qs, urlparse, unquote
@@ -191,7 +192,7 @@ def generate_blob_read_sas_url(blob_name, expiry_minutes):
         raise RuntimeError("Account key not found in AZURE_STORAGE_CONNECTION_STRING.")
 
     safe_minutes = max(1, min(int(expiry_minutes), 7 * 24 * 60))
-    expires_at_utc = datetime.utcnow() + timedelta(minutes=safe_minutes)
+    expires_at_utc = datetime.now(timezone.utc) + timedelta(minutes=safe_minutes)
 
     sas_token = generate_blob_sas(
         account_name=account_name,
@@ -229,7 +230,7 @@ def upload_download_audit_blob(category, filename, file_bytes, mimetype):
     metadata = {
         "endpoint": re.sub(r"[^a-zA-Z0-9_\-]", "_", endpoint),
         "remote_ip": re.sub(r"[^a-zA-Z0-9_\-:., ]", "_", remote_ip),
-        "downloaded_at": datetime.utcnow().strftime("%Y%m%dT%H%M%SZ"),
+        "downloaded_at": datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
     }
 
     container_client = blob_service.get_container_client(AZURE_STORAGE_CONTAINER)
@@ -1093,7 +1094,14 @@ def fetch_non_credit_card_sales_rows(db, start_date, end_date, customer_match):
 
 def credit_card_daily_report_to_pdf_bytes(rows, report_date, customer_match):
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter)
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(letter),
+        leftMargin=24,
+        rightMargin=24,
+        topMargin=24,
+        bottomMargin=24,
+    )
 
     styles = getSampleStyleSheet()
     normal = styles["Normal"]
@@ -1116,19 +1124,32 @@ def credit_card_daily_report_to_pdf_bytes(rows, report_date, customer_match):
     total_amount = sum(float(r.get("cost") or 0) for r in rows)
     total_count = len(rows)
 
+    col_widths = [85, 100, 100, 150, 80, 140, 65]
+
+    def clip_to_width(value, width_points, font_name="Helvetica", font_size=9):
+        text = str(value or "")
+        if not text:
+            return ""
+
+        usable_width = max(8, float(width_points) - 8)
+        if stringWidth(text, font_name, font_size) <= usable_width:
+            return text
+
+        while text and stringWidth(text, font_name, font_size) > usable_width:
+            text = text[:-1]
+        return text
+
     elements.append(Paragraph(f"Total transactions: {total_count}", normal))
     elements.append(Paragraph(f"Total amount: {format_currency(total_amount)}", normal))
     elements.append(Spacer(1, 10))
 
     table_data = [[
         "Ticket #",
-        "Time",
+        "Date/Time",
         "Customer",
         "Job",
         "Truck",
         "Material",
-        "Qty",
-        "Unit",
         "Cost",
     ]]
 
@@ -1141,28 +1162,26 @@ def credit_card_daily_report_to_pdf_bytes(rows, report_date, customer_match):
             if part
         )
         table_data.append([
-            str(row.get("ticket_number") or ""),
-            format_ticket_datetime(row.get("created_at")),
-            str(row.get("customer_snapshot") or ""),
-            job_text,
-            str(row.get("truck_number_snapshot") or ""),
-            str(row.get("material_name_snapshot") or ""),
-            f"{float(row.get('quantity') or 0):.2f}",
-            str(row.get("unit") or ""),
+            clip_to_width(str(row.get("ticket_number") or "").strip() or "-", col_widths[0]),
+            clip_to_width(format_ticket_datetime(row.get("created_at")), col_widths[1]),
+            clip_to_width(str(row.get("customer_snapshot") or ""), col_widths[2]),
+            clip_to_width(job_text, col_widths[3]),
+            clip_to_width(str(row.get("truck_number_snapshot") or ""), col_widths[4]),
+            clip_to_width(str(row.get("material_name_snapshot") or ""), col_widths[5]),
             format_currency(row.get("cost")),
         ])
 
     table = Table(
         table_data,
-        colWidths=[58, 58, 85, 95, 48, 65, 32, 36, 45],
+        colWidths=col_widths,
         repeatRows=1,
     )
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
         ("GRID", (0, 0), (-1, -1), 1, colors.black),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("ALIGN", (6, 1), (6, -1), "RIGHT"),
-        ("ALIGN", (8, 1), (8, -1), "RIGHT"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("ALIGN", (5, 1), (5, -1), "RIGHT"),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
     ]))
     elements.append(table)
@@ -3743,9 +3762,28 @@ def api_credit_card_daily_report():
 
     body = request.get_json(silent=True) if request.is_json else {}
     body = body or {}
+    if not body:
+        raw_body = request.get_data(as_text=True) or ""
+        if raw_body.strip():
+            try:
+                parsed_body = json.loads(raw_body)
+                if isinstance(parsed_body, dict):
+                    body = parsed_body
+            except Exception:
+                pass
 
-    report_date_raw = str(body.get("report_date") or request.args.get("report_date") or "").strip()
-    sas_minutes_raw = str(body.get("sas_minutes") or request.args.get("sas_minutes") or CREDIT_CARD_REPORT_SAS_MINUTES).strip()
+    report_date_raw = str(
+        body.get("report_date")
+        or request.form.get("report_date")
+        or request.args.get("report_date")
+        or ""
+    ).strip()
+    sas_minutes_raw = str(
+        body.get("sas_minutes")
+        or request.form.get("sas_minutes")
+        or request.args.get("sas_minutes")
+        or CREDIT_CARD_REPORT_SAS_MINUTES
+    ).strip()
 
     report_date = app_now().date()
     if report_date_raw:
@@ -3819,9 +3857,28 @@ def api_non_credit_card_daily_report():
 
     body = request.get_json(silent=True) if request.is_json else {}
     body = body or {}
+    if not body:
+        raw_body = request.get_data(as_text=True) or ""
+        if raw_body.strip():
+            try:
+                parsed_body = json.loads(raw_body)
+                if isinstance(parsed_body, dict):
+                    body = parsed_body
+            except Exception:
+                pass
 
-    report_date_raw = str(body.get("report_date") or request.args.get("report_date") or "").strip()
-    sas_minutes_raw = str(body.get("sas_minutes") or request.args.get("sas_minutes") or CREDIT_CARD_REPORT_SAS_MINUTES).strip()
+    report_date_raw = str(
+        body.get("report_date")
+        or request.form.get("report_date")
+        or request.args.get("report_date")
+        or ""
+    ).strip()
+    sas_minutes_raw = str(
+        body.get("sas_minutes")
+        or request.form.get("sas_minutes")
+        or request.args.get("sas_minutes")
+        or CREDIT_CARD_REPORT_SAS_MINUTES
+    ).strip()
 
     report_date = app_now().date()
     if report_date_raw:
