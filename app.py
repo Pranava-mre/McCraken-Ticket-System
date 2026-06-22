@@ -2188,7 +2188,6 @@ def list_jobs(db):
         """
         SELECT id, job_code, job_name, customer
         FROM jobs_cache
-        WHERE active = 1
         ORDER BY job_code
         """
         )
@@ -2206,7 +2205,6 @@ def list_ticket_jobs(db):
             customer,
             tax_exempt
         FROM jobs_cache
-        WHERE active = 1
 
         UNION ALL
 
@@ -2217,7 +2215,6 @@ def list_ticket_jobs(db):
             customer,
             tax_exempt
         FROM manual_jobs
-        WHERE active = 1
 
         ORDER BY job_code, job_name
         LIMIT %s
