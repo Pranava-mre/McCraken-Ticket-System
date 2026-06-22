@@ -150,10 +150,13 @@ Open: `http://127.0.0.1:5000`
 
 ## RFID Truck Notification Webhook
 You can call a webhook from an external/local RFID script when a known truck is detected.
+This endpoint now supports direct Impinj R700 webhook payloads.
 
-Environment variable (recommended):
+Environment variables:
 ```env
 RFID_EVENT_API_KEY=your_long_random_key
+RFID_WEBHOOK_USERNAME=
+RFID_WEBHOOK_PASSWORD=
 ```
 
 Webhook endpoint:
@@ -162,24 +165,53 @@ POST /api/notifications/truck-seen
 ```
 
 Authentication:
-- If `RFID_EVENT_API_KEY` is set, send header `X-API-Key: <key>` (or `?api_key=...`).
-- If `RFID_EVENT_API_KEY` is not set, only localhost calls are accepted (`127.0.0.1` / `::1`).
+- If `RFID_EVENT_API_KEY` is set, send `X-API-Key: <key>` (or `?api_key=...`).
+- Optional alternative: set `RFID_WEBHOOK_USERNAME` and `RFID_WEBHOOK_PASSWORD` and send Basic Auth.
+- If neither API key nor webhook credentials are configured, only localhost calls are accepted (`127.0.0.1` / `::1`).
 
-Required payload:
-- `truck_number` (string)
+Payload options:
+- Direct mode: include `truck_number`.
+- R700 mode: include tag EPC (`epc` / `tag_epc` / similar). The app maps EPC to truck using `rfid_epc_truck_map`.
 
 Optional payload:
 - `source` (string, example: `gate-reader-1`)
 - `message` (string, custom notification text)
 - `detected_at` (ISO timestamp, example: `2026-05-15T10:23:00Z`)
 
-Example request:
+Example request (direct truck number):
 ```powershell
 Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:5000/api/notifications/truck-seen" `
     -Headers @{"X-API-Key"="your_long_random_key"} `
     -ContentType "application/json" `
     -Body '{"truck_number":"TRK-102","source":"rfid-gate-1"}'
 ```
+
+Example request (EPC mapped to truck):
+```powershell
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:5000/api/notifications/truck-seen" `
+    -Headers @{"X-API-Key"="your_long_random_key"} `
+    -ContentType "application/json" `
+    -Body '{"epc":"300833B2DDD9014000000000","source":"r700-gate-1"}'
+```
+
+EPC mapping setup example:
+```sql
+INSERT INTO rfid_epc_truck_map (epc, truck_number, source, active)
+VALUES ('300833B2DDD9014000000000', 'TRK-102', 'manual', TRUE)
+ON CONFLICT (epc) DO UPDATE
+SET truck_number = EXCLUDED.truck_number,
+    source = EXCLUDED.source,
+    active = EXCLUDED.active,
+    updated_at = NOW();
+```
+
+Impinj R700 webhook notes:
+- For Azure/App Service URL, use HTTPS and port `443`.
+- Do not use `127.0.0.1` on the reader. From reader perspective, that points to the reader itself.
+- For local testing from reader, run Flask on `0.0.0.0` and use your laptop LAN IP, for example:
+  - URL: `http://192.168.3.50/api/notifications/truck-seen`
+  - Port: `5000`
+  - TLS verify: off (HTTP local test)
 
 Behavior:
 - The truck number is validated against active trucks in `trucks_main`.

@@ -77,6 +77,28 @@ CREATE TABLE IF NOT EXISTS trucks_main(
     active INTEGER NOT NULL DEFAULT 1
 );
 
+CREATE TABLE IF NOT EXISTS rfid_notifications (
+    id BIGSERIAL PRIMARY KEY,
+    event_type TEXT NOT NULL DEFAULT 'known_truck_detected',
+    truck_number TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'rfid',
+    message TEXT NOT NULL,
+    detected_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    status TEXT NOT NULL DEFAULT 'pending',
+    decided_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS rfid_epc_truck_map (
+    id BIGSERIAL PRIMARY KEY,
+    epc TEXT NOT NULL UNIQUE,
+    truck_number TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT '',
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS tickets (
     id BIGSERIAL PRIMARY KEY,
     ticket_number TEXT NOT NULL UNIQUE,
@@ -111,3 +133,5 @@ CREATE INDEX IF NOT EXISTS idx_tickets_created_at ON tickets(created_at);
 CREATE INDEX IF NOT EXISTS idx_tickets_ticket_number ON tickets(ticket_number);
 CREATE INDEX IF NOT EXISTS idx_tickets_job_code ON tickets(job_code_snapshot);
 CREATE INDEX IF NOT EXISTS idx_tickets_truck_number ON tickets(truck_number_snapshot);
+CREATE INDEX IF NOT EXISTS idx_rfid_epc_map_epc ON rfid_epc_truck_map(LOWER(TRIM(epc)));
+CREATE INDEX IF NOT EXISTS idx_rfid_epc_map_truck ON rfid_epc_truck_map(LOWER(TRIM(truck_number)));

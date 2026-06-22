@@ -13,7 +13,8 @@ from datetime import timedelta
 from urllib.parse import parse_qs, urlparse, unquote
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
+import base64
+import re
 import psycopg2
 import pyodbc
 from dotenv import load_dotenv
@@ -101,7 +102,17 @@ CREDIT_CARD_CUSTOMER_MATCH = os.getenv("CREDIT_CARD_CUSTOMER_MATCH", "credit car
 CREDIT_CARD_REPORT_API_KEY = os.getenv("CREDIT_CARD_REPORT_API_KEY", "").strip()
 CREDIT_CARD_REPORT_SAS_MINUTES = int(os.getenv("CREDIT_CARD_REPORT_SAS_MINUTES", "180").strip() or "180")
 RFID_EVENT_API_KEY = os.getenv("RFID_EVENT_API_KEY", "").strip()
+RFID_WEBHOOK_USERNAME = os.getenv("RFID_WEBHOOK_USERNAME", "").strip()
+RFID_WEBHOOK_PASSWORD = os.getenv("RFID_WEBHOOK_PASSWORD", "").strip()
 NOTIFICATIONS_ENABLED = os.getenv("NOTIFICATIONS_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+app.config["NOTIFICATIONS_ENABLED"] = NOTIFICATIONS_ENABLED
+try:
+    RFID_NOTIFICATION_COOLDOWN_SECONDS = max(
+        0,
+        int(os.getenv("RFID_NOTIFICATION_COOLDOWN_SECONDS", "60").strip() or "60"),
+    )
+except ValueError:
+    RFID_NOTIFICATION_COOLDOWN_SECONDS = 60
 
 
 def env_flag(name, default=False):
@@ -592,32 +603,45 @@ def ensure_db_migrations(conn):
             )
             """
         )
-        # Notification schema is intentionally disabled for now, but kept in comments
-        # so this temporary feature can be restored quickly.
-        # cursor.execute(
-        #     """
-        #     CREATE TABLE IF NOT EXISTS rfid_notifications (
-        #         id BIGSERIAL PRIMARY KEY,
-        #         event_type TEXT NOT NULL DEFAULT 'known_truck_detected',
-        #         truck_number TEXT NOT NULL,
-        #         source TEXT NOT NULL DEFAULT 'rfid',
-        #         message TEXT NOT NULL,
-        #         detected_at TIMESTAMPTZ,
-        #         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        #         status TEXT NOT NULL DEFAULT 'pending',
-        #         decided_at TIMESTAMPTZ
-        #     )
-        #     """
-        # )
-        # cursor.execute("ALTER TABLE rfid_notifications ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending'")
-        # cursor.execute("ALTER TABLE rfid_notifications ADD COLUMN IF NOT EXISTS decided_at TIMESTAMPTZ")
-        # cursor.execute(
-        #     """
-        #     UPDATE rfid_notifications
-        #     SET status = 'pending'
-        #     WHERE status IS NULL OR status NOT IN ('pending', 'approved', 'denied')
-        #     """
-        # )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS rfid_notifications (
+                id BIGSERIAL PRIMARY KEY,
+                event_type TEXT NOT NULL DEFAULT 'known_truck_detected',
+                truck_number TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'rfid',
+                message TEXT NOT NULL,
+                detected_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                status TEXT NOT NULL DEFAULT 'pending',
+                decided_at TIMESTAMPTZ
+            )
+            """
+        )
+        cursor.execute("ALTER TABLE rfid_notifications ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending'")
+        cursor.execute("ALTER TABLE rfid_notifications ADD COLUMN IF NOT EXISTS decided_at TIMESTAMPTZ")
+        cursor.execute(
+            """
+            UPDATE rfid_notifications
+            SET status = 'pending'
+            WHERE status IS NULL OR status NOT IN ('pending', 'approved', 'denied')
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS rfid_epc_truck_map (
+                id BIGSERIAL PRIMARY KEY,
+                epc TEXT NOT NULL UNIQUE,
+                truck_number TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT '',
+                active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_rfid_epc_map_epc ON rfid_epc_truck_map(LOWER(TRIM(epc)))")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_rfid_epc_map_truck ON rfid_epc_truck_map(LOWER(TRIM(truck_number)))")
 
 
 def refresh_jobs_on_startup():
@@ -1231,7 +1255,7 @@ def non_credit_card_daily_report_to_pdf_bytes(rows, report_start_date, report_en
     def normalize_customer_name(value):
         return " ".join(str(value or "").strip().lower().split())
 
-    our_customers = {"mrex", "petty group", "redcon"}
+    our_customers = {"mrex", "petty group llc", "redcon"}
     external_grouped_rows = {}
     internal_grouped_rows = {}
 
@@ -1433,7 +1457,7 @@ def customer_grouped_report_to_pdf_bytes(rows, filters):
     def normalize_customer_name(value):
         return " ".join(str(value or "").strip().lower().split())
 
-    our_customers = {"mrex", "petty group", "redcon"}
+    our_customers = {"mrex", "petty group llc", "redcon"}
     external_grouped_rows = {}
     internal_grouped_rows = {}
 
@@ -2314,12 +2338,14 @@ def get_customer_by_name(db, customer_name):
         )
         return cursor.fetchone()
 
+
 def list_trucks(db):
     with db.cursor() as cursor:
         cursor.execute(
         "SELECT id, truck_number, notes AS description, truck_size, trucking_company AS hauled_by, active FROM trucks_main WHERE active = TRUE ORDER BY truck_number"
         )
         return cursor.fetchall()
+
 
 def list_materials(db, direction=None):
     with db.cursor() as cursor:
@@ -2334,6 +2360,7 @@ def list_materials(db, direction=None):
             )
         return cursor.fetchall()
 
+
 @app.before_request
 def require_login():
     if request.endpoint is None:
@@ -2347,6 +2374,7 @@ def require_login():
         "api_credit_card_daily_report",
         "api_non_credit_card_daily_report",
         "api_notification_truck_seen",
+        "test"
     }
     if request.endpoint in open_endpoints:
         return
@@ -2358,86 +2386,319 @@ def parse_iso_datetime(value):
     text = str(value or "").strip()
     if not text:
         return None
+    if re.fullmatch(r"[0-9]{13}", text):
+        return datetime.fromtimestamp(int(text) / 1000.0, tz=timezone.utc)
+    if re.fullmatch(r"[0-9]{10}(?:\.[0-9]+)?", text):
+        return datetime.fromtimestamp(float(text), tz=timezone.utc)
     if text.endswith("Z"):
         text = text[:-1] + "+00:00"
     return datetime.fromisoformat(text)
 
 
+def parse_webhook_payload():
+    body = request.get_json(silent=True)
+    if body is not None:
+        return body
+
+    raw_body = request.get_data(as_text=True) or ""
+    if raw_body.strip():
+        try:
+            return json.loads(raw_body)
+        except Exception:
+            pass
+
+    if request.form:
+        return request.form.to_dict(flat=True)
+    return {}
+
+
+def payload_first_value(payload, keys):
+    normalized_keys = {str(k).strip().lower().replace("-", "_") for k in keys}
+    stack = [payload]
+
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            for key, value in current.items():
+                key_norm = str(key).strip().lower().replace("-", "_")
+                if key_norm in normalized_keys and value is not None:
+                    if isinstance(value, (str, int, float, bool)):
+                        text = str(value).strip()
+                        if text:
+                            return text
+                if isinstance(value, (dict, list, tuple)):
+                    stack.append(value)
+        elif isinstance(current, (list, tuple)):
+            stack.extend(current)
+
+    return ""
+
+
+# def normalize_epc(value):
+#     text = str(value or "").strip()
+#     if not text:
+#         return ""
+#     if text.lower().startswith("0x"):
+#         text = text[2:]
+#     return text.replace(" ", "").replace("-", "").upper()
+
+def normalize_epc(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+
+    if text.lower().startswith("0x"):
+        text = text[2:]
+
+    text_no_sep = text.replace(" ", "").replace("-", "")
+
+    if re.fullmatch(r"[0-9A-Fa-f]+", text_no_sep):
+        return text_no_sep.upper()
+
+    try:
+        decoded = base64.b64decode(text_no_sep, validate=True)
+        if decoded:
+            return decoded.hex().upper()
+    except Exception:
+        pass
+
+    return text_no_sep.upper()
+
+def truck_number_from_epc(db, epc_raw):
+    epc = normalize_epc(epc_raw)
+    if not epc:
+        return ""
+
+    with db.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT truck_number
+            FROM rfid_epc_truck_map
+            WHERE COALESCE(active, TRUE) = TRUE
+              AND LOWER(TRIM(epc)) = LOWER(TRIM(%s))
+            LIMIT 1
+            """,
+            (epc,),
+        )
+        row = cursor.fetchone()
+    if not row:
+        return ""
+    return str(row.get("truck_number") or "").strip()
+
+
+def notification_in_cooldown(db, truck_number, source, cooldown_seconds):
+    if cooldown_seconds <= 0:
+        return False
+
+    with db.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT id
+            FROM rfid_notifications
+            WHERE event_type = 'known_truck_detected'
+              AND LOWER(TRIM(truck_number)) = LOWER(TRIM(%s))
+              AND LOWER(TRIM(source)) = LOWER(TRIM(%s))
+              AND created_at >= NOW() - (%s * INTERVAL '1 second')
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (truck_number, source, cooldown_seconds),
+        )
+        return bool(cursor.fetchone())
+
+@app.route("/api/rfid/root-test", methods=["GET", "POST"])
+def rfid_root_test():
+    print("R700 reached root")
+    print(request.method)
+    print(dict(request.headers))
+    print(request.get_data(as_text=True))
+    return {"ok": True}, 200
+
+@app.post("/api/notifications/truck-seen/test")
+def test():
+    print("=" * 80)
+    print("Headers:", dict(request.headers))
+    print("Raw:", request.get_data())
+    print("Text:", request.get_data(as_text=True))
+    print("JSON:", request.get_json(silent=True))
+    return "", 200
+
 @app.post("/api/notifications/truck-seen")
 def api_notification_truck_seen():
+    
+    print("=" * 80)
+    print("RFID webhook received")
+    print("Remote IP:", request.remote_addr)
+    print("Headers:", dict(request.headers))
+    print("Raw body:", request.get_data(as_text=True))
+    print("JSON body:", request.get_json(silent=True))
+    print("=" * 80)
+
     if not NOTIFICATIONS_ENABLED:
         return {"ok": False, "error": "Notifications are temporarily disabled."}, 503
 
     provided_key = (request.headers.get("X-API-Key") or request.args.get("api_key") or "").strip()
+    auth = request.authorization
+    basic_auth_configured = bool(RFID_WEBHOOK_USERNAME or RFID_WEBHOOK_PASSWORD)
+    basic_auth_ok = bool(
+        auth
+        and hmac.compare_digest(str(auth.username or ""), RFID_WEBHOOK_USERNAME)
+        and hmac.compare_digest(str(auth.password or ""), RFID_WEBHOOK_PASSWORD)
+    )
+
     if RFID_EVENT_API_KEY:
-        if not hmac.compare_digest(provided_key, RFID_EVENT_API_KEY):
-            return {"ok": False, "error": "Unauthorized."}, 401
+        key_ok = hmac.compare_digest(provided_key, RFID_EVENT_API_KEY)
+        if not (key_ok or (basic_auth_configured and basic_auth_ok)):
+            return {"ok": False, "error": "Unauthorized. Provide valid API key or webhook basic auth."}, 401
+    elif basic_auth_configured:
+        if not basic_auth_ok:
+            return {"ok": False, "error": "Unauthorized. Invalid webhook basic auth."}, 401
     else:
         forwarded_for = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
         remote_ip = forwarded_for or (request.remote_addr or "")
         if remote_ip not in {"127.0.0.1", "::1", "localhost"}:
             return {
                 "ok": False,
-                "error": "RFID_EVENT_API_KEY is not configured. Configure it or call from localhost.",
+                "error": "Configure RFID_EVENT_API_KEY or webhook basic auth, or call from localhost.",
             }, 401
 
-    body = request.get_json(silent=True) if request.is_json else {}
-    body = body or {}
+    body = parse_webhook_payload()
+    events = body if isinstance(body, list) else [body or {}]
 
-    truck_number = str(body.get("truck_number") or request.form.get("truck_number") or "").strip()
-    source = str(body.get("source") or request.form.get("source") or "rfid").strip() or "rfid"
-    custom_message = str(body.get("message") or request.form.get("message") or "").strip()
-    detected_at_raw = str(body.get("detected_at") or request.form.get("detected_at") or "").strip()
-
-    if not truck_number:
-        return {"ok": False, "error": "truck_number is required."}, 400
-
-    detected_at = None
-    if detected_at_raw:
-        try:
-            detected_at = parse_iso_datetime(detected_at_raw)
-        except ValueError:
-            return {"ok": False, "error": "Invalid detected_at. Use ISO-8601 format."}, 400
+    fallback_source = (
+        payload_first_value(body, ["source", "reader_name", "reader", "device_name", "hostname"])
+        or request.args.get("source", "").strip()
+        or "r700-gate-1"
+    )
+    fallback_message = payload_first_value(body, ["message", "note", "description"]) or str(request.args.get("message") or "").strip()
+    fallback_truck_number = payload_first_value(body, ["truck_number", "truck", "truck_no", "truckno"]) or str(request.args.get("truck_number") or "").strip()
+    fallback_detected_at_raw = payload_first_value(body, ["detected_at", "timestamp", "event_time", "time", "first_seen_time"]) or str(request.args.get("detected_at") or "").strip()
+    fallback_epc_raw = payload_first_value(body, ["epc", "tag_epc", "tagEpc", "epc_hex", "id_hex", "tag_id", "tagid"]) or request.args.get("epc", "").strip()
 
     db = get_db()
-    with db.cursor() as cursor:
-        cursor.execute(
-            """
-            SELECT id, truck_number
-            FROM trucks_main
-            WHERE active = TRUE AND LOWER(TRIM(truck_number)) = LOWER(TRIM(%s))
-            LIMIT 1
-            """,
-            (truck_number,),
+    truck_cache = {}
+    seen_payload_keys = set()
+    created_notifications = []
+    suppressed = []
+    skipped = []
+    mapped_any = False
+
+    for index, event in enumerate(events):
+        if not isinstance(event, dict):
+            skipped.append({"index": index, "reason": "event_not_object"})
+            continue
+
+        tag_event = event.get("tagInventoryEvent", {}) if isinstance(event.get("tagInventoryEvent"), dict) else {}
+        source = (
+            payload_first_value(event, ["source", "reader_name", "reader", "device_name", "hostname"])
+            or fallback_source
         )
-        truck = cursor.fetchone()
+        source = str(source or "r700-gate-1").strip() or "r700-gate-1"
 
-    if not truck:
-        return {"ok": False, "error": "Truck is not active/known in trucks list."}, 404
+        custom_message = payload_first_value(event, ["message", "note", "description"]) or fallback_message
+        truck_number = payload_first_value(event, ["truck_number", "truck", "truck_no", "truckno"]) or fallback_truck_number
+        detected_at_raw = (
+            event.get("timestamp")
+            or payload_first_value(event, ["detected_at", "timestamp", "event_time", "time", "first_seen_time"])
+            or fallback_detected_at_raw
+        )
+        epc_raw = (
+            tag_event.get("epcHex")
+            or tag_event.get("epc")
+            or payload_first_value(event, ["epc", "tag_epc", "tagEpc", "epc_hex", "id_hex", "tag_id", "tagid"])
+            or fallback_epc_raw
+        )
 
-    normalized_truck_number = str(truck.get("truck_number") or truck_number).strip() or truck_number
-    message = custom_message or f"Known truck appeared: {normalized_truck_number}"
+        epc_normalized = normalize_epc(epc_raw)
+        payload_key = (f"epc:{epc_normalized}" if epc_normalized else f"truck:{str(truck_number).strip().lower()}")
+        if payload_key in seen_payload_keys:
+            skipped.append({"index": index, "reason": "duplicate_in_payload", "epc": epc_normalized or None})
+            continue
+        seen_payload_keys.add(payload_key)
 
-    try:
-        with db.cursor() as cursor:
-            cursor.execute(
-                """
-                INSERT INTO rfid_notifications (event_type, truck_number, source, message, detected_at)
-                VALUES (%s, %s, %s, %s, %s)
-                RETURNING id, status, created_at
-                """,
-                ("known_truck_detected", normalized_truck_number, source, message, detected_at),
+        mapped_from_epc = False
+        truck_number = str(truck_number or "").strip()
+        if not truck_number and epc_normalized:
+            truck_number = truck_number_from_epc(db, epc_normalized)
+            mapped_from_epc = bool(truck_number)
+            mapped_any = mapped_any or mapped_from_epc
+
+        print("event_index:", index)
+        print("epc_raw:", epc_raw)
+        print("epc_normalized:", epc_normalized)
+        print("truck_number before mapping:", truck_number)
+
+        if not truck_number:
+            skipped.append(
+                {
+                    "index": index,
+                    "reason": "no_truck_mapping",
+                    "epc": epc_normalized or None,
+                }
             )
-            created = cursor.fetchone()
-        db.commit()
-    except Exception as exc:
-        db.rollback()
-        return {"ok": False, "error": f"Could not store notification: {exc}"}, 500
+            continue
 
-    created_at = created.get("created_at")
-    return {
-        "ok": True,
-        "notification": {
+        truck_cache_key = truck_number.strip().lower()
+        truck = truck_cache.get(truck_cache_key)
+        if truck is None:
+            with db.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, truck_number
+                    FROM trucks_main
+                    WHERE active = TRUE AND LOWER(TRIM(truck_number)) = LOWER(TRIM(%s))
+                    LIMIT 1
+                    """,
+                    (truck_number,),
+                )
+                truck = cursor.fetchone()
+            truck_cache[truck_cache_key] = truck
+
+        if not truck:
+            skipped.append({"index": index, "reason": "truck_not_active", "truck_number": truck_number})
+            continue
+
+        normalized_truck_number = str(truck.get("truck_number") or truck_number).strip() or truck_number
+        detected_at = None
+        if detected_at_raw:
+            try:
+                detected_at = parse_iso_datetime(detected_at_raw)
+            except ValueError:
+                skipped.append({"index": index, "reason": "invalid_detected_at", "value": str(detected_at_raw)})
+                continue
+
+        if notification_in_cooldown(db, normalized_truck_number, source, RFID_NOTIFICATION_COOLDOWN_SECONDS):
+            suppressed.append(
+                {
+                    "index": index,
+                    "truck_number": normalized_truck_number,
+                    "epc": epc_normalized or None,
+                    "cooldown_seconds": RFID_NOTIFICATION_COOLDOWN_SECONDS,
+                }
+            )
+            continue
+
+        message = custom_message or f"Known truck appeared: {normalized_truck_number}"
+        if epc_normalized:
+            message = custom_message or f"Known truck appeared: {normalized_truck_number} (EPC: {epc_normalized})"
+
+        try:
+            with db.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO rfid_notifications (event_type, truck_number, source, message, detected_at)
+                    VALUES (%s, %s, %s, %s, %s)
+                    RETURNING id, status, created_at
+                    """,
+                    ("known_truck_detected", normalized_truck_number, source, message, detected_at),
+                )
+                created = cursor.fetchone()
+        except Exception as exc:
+            db.rollback()
+            return {"ok": False, "error": f"Could not store notification: {exc}"}, 500
+
+        created_at = created.get("created_at")
+        created_item = {
             "id": int(created.get("id") or 0),
             "event_type": "known_truck_detected",
             "truck_number": normalized_truck_number,
@@ -2446,8 +2707,54 @@ def api_notification_truck_seen():
             "status": created.get("status") or "pending",
             "detected_at": detected_at.isoformat() if detected_at else None,
             "created_at": created_at.isoformat() if created_at else None,
-        },
-    }, 201
+            "epc": epc_normalized or None,
+            "mapped_from_epc": mapped_from_epc,
+        }
+        created_notifications.append(created_item)
+
+    if created_notifications:
+        db.commit()
+
+    if not created_notifications and suppressed:
+        return {
+            "ok": True,
+            "created_count": 0,
+            "suppressed_count": len(suppressed),
+            "skipped_count": len(skipped),
+            "cooldown_seconds": RFID_NOTIFICATION_COOLDOWN_SECONDS,
+            "suppressed": suppressed,
+            "skipped": skipped,
+        }, 200
+
+    if not created_notifications:
+        epc_hint = next((item.get("epc") for item in skipped if item.get("epc")), None)
+        return {
+            "ok": False,
+            "error": "No valid mapped truck events were found in this payload.",
+            "epc": epc_hint,
+            "skipped": skipped,
+        }, 404
+
+    response_payload = {
+        "ok": True,
+        "mapped_from_epc": mapped_any,
+        "created_count": len(created_notifications),
+        "suppressed_count": len(suppressed),
+        "skipped_count": len(skipped),
+        "cooldown_seconds": RFID_NOTIFICATION_COOLDOWN_SECONDS,
+        "notifications": created_notifications,
+        "suppressed": suppressed,
+        "skipped": skipped,
+    }
+
+    if len(created_notifications) == 1:
+        response_payload["notification"] = created_notifications[0]
+        response_payload["epc"] = created_notifications[0].get("epc")
+
+    print("RFID Notification Created:")
+    print(response_payload)
+
+    return response_payload, 201
 
 
 def serialize_notification_row(row):
@@ -5005,7 +5312,8 @@ def toggle_material(material_id):
 if __name__ == "__main__":
     ensure_app_initialized()
     refresh_jobs_on_startup()
-    host = os.getenv("FLASK_RUN_HOST", "127.0.0.1")
+    # host = os.getenv("FLASK_RUN_HOST", "127.0.0.1")
+    host = os.getenv("FLASK_RUN_HOST", "0.0.0.0")
     port = int(os.getenv("PORT", os.getenv("FLASK_RUN_PORT", "5000")))
     debug = os.getenv("FLASK_DEBUG", "0").strip().lower() in {"1", "true", "yes", "on"}
     app.run(debug=debug, host=host, port=port)
