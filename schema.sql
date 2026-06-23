@@ -99,6 +99,23 @@ CREATE TABLE IF NOT EXISTS rfid_epc_truck_map (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS rfid_tag_catalog (
+    serial_number TEXT PRIMARY KEY,
+    epc TEXT NOT NULL UNIQUE,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS rfid_truck_tag_assignment (
+    id BIGSERIAL PRIMARY KEY,
+    serial_number TEXT NOT NULL UNIQUE REFERENCES rfid_tag_catalog(serial_number) ON DELETE RESTRICT,
+    truck_id BIGINT NOT NULL UNIQUE REFERENCES trucks_main(id) ON DELETE RESTRICT,
+    notes TEXT NOT NULL DEFAULT '',
+    assigned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS tickets (
     id BIGSERIAL PRIMARY KEY,
     ticket_number TEXT NOT NULL UNIQUE,
@@ -135,3 +152,6 @@ CREATE INDEX IF NOT EXISTS idx_tickets_job_code ON tickets(job_code_snapshot);
 CREATE INDEX IF NOT EXISTS idx_tickets_truck_number ON tickets(truck_number_snapshot);
 CREATE INDEX IF NOT EXISTS idx_rfid_epc_map_epc ON rfid_epc_truck_map(LOWER(TRIM(epc)));
 CREATE INDEX IF NOT EXISTS idx_rfid_epc_map_truck ON rfid_epc_truck_map(LOWER(TRIM(truck_number)));
+CREATE INDEX IF NOT EXISTS idx_rfid_tag_catalog_epc ON rfid_tag_catalog(LOWER(TRIM(epc)));
+CREATE INDEX IF NOT EXISTS idx_rfid_assign_serial ON rfid_truck_tag_assignment(LOWER(TRIM(serial_number)));
+CREATE INDEX IF NOT EXISTS idx_rfid_assign_truck ON rfid_truck_tag_assignment(truck_id);

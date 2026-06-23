@@ -642,6 +642,32 @@ def ensure_db_migrations(conn):
         )
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_rfid_epc_map_epc ON rfid_epc_truck_map(LOWER(TRIM(epc)))")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_rfid_epc_map_truck ON rfid_epc_truck_map(LOWER(TRIM(truck_number)))")
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS rfid_tag_catalog (
+                serial_number TEXT PRIMARY KEY,
+                epc TEXT NOT NULL UNIQUE,
+                active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS rfid_truck_tag_assignment (
+                id BIGSERIAL PRIMARY KEY,
+                serial_number TEXT NOT NULL UNIQUE REFERENCES rfid_tag_catalog(serial_number) ON DELETE RESTRICT,
+                truck_id BIGINT NOT NULL UNIQUE REFERENCES trucks_main(id) ON DELETE RESTRICT,
+                notes TEXT NOT NULL DEFAULT '',
+                assigned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_rfid_tag_catalog_epc ON rfid_tag_catalog(LOWER(TRIM(epc)))")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_rfid_assign_serial ON rfid_truck_tag_assignment(LOWER(TRIM(serial_number)))")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_rfid_assign_truck ON rfid_truck_tag_assignment(truck_id)")
 
 
 def refresh_jobs_on_startup():
@@ -2198,26 +2224,41 @@ def list_ticket_jobs(db):
     with db.cursor() as cursor:
         cursor.execute(
         """
-        SELECT
-            ('cache:' || id::text) AS job_key,
-            job_code,
-            job_name,
-            customer,
-            tax_exempt
-        FROM jobs_cache
+        WITH manual AS (
+            SELECT
+                ('manual:' || id::text) AS job_key,
+                job_code,
+                job_name,
+                customer,
+                tax_exempt
+            FROM manual_jobs
+        ),
+        cache_limited AS (
+            SELECT
+                ('cache:' || c.id::text) AS job_key,
+                c.job_code,
+                c.job_name,
+                c.customer,
+                c.tax_exempt
+            FROM jobs_cache c
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM manual m
+                WHERE m.job_code = c.job_code
+                  AND m.job_name = c.job_name
+            )
+            ORDER BY c.job_code, c.job_name
+            LIMIT GREATEST(%s - (SELECT COUNT(*) FROM manual), 0)
+        )
+        SELECT job_key, job_code, job_name, customer, tax_exempt
+        FROM manual
 
         UNION ALL
 
-        SELECT
-            ('manual:' || id::text) AS job_key,
-            job_code,
-            job_name,
-            customer,
-            tax_exempt
-        FROM manual_jobs
+        SELECT job_key, job_code, job_name, customer, tax_exempt
+        FROM cache_limited
 
         ORDER BY job_code, job_name
-        LIMIT %s
         """,
         (MAX_JOB_OPTIONS,),
         )
@@ -2483,6 +2524,212 @@ def truck_number_from_epc(db, epc_raw):
     return str(row.get("truck_number") or "").strip()
 
 
+def normalize_serial_number(value):
+    text = str(value or "").strip()
+    if re.fullmatch(r"[0-9]+\.0", text):
+        text = text[:-2]
+    return text.upper()
+
+
+def resolve_rfid_upload_columns(sample_row):
+    key_lookup = {str(k).strip().lower(): k for k in sample_row.keys()}
+    epc_col = key_lookup.get("epc") or key_lookup.get("epc_hex") or key_lookup.get("epchex")
+    serial_col = (
+        key_lookup.get("serial_number")
+        or key_lookup.get("serial")
+        or key_lookup.get("sticker_number")
+        or key_lookup.get("sticker")
+    )
+    return epc_col, serial_col
+
+
+def upsert_rfid_tag_catalog_row(db, serial_number, epc):
+    with db.cursor() as cursor:
+        cursor.execute(
+            """
+            INSERT INTO rfid_tag_catalog (serial_number, epc, active, updated_at)
+            VALUES (%s, %s, TRUE, NOW())
+            ON CONFLICT (serial_number) DO UPDATE
+            SET epc = EXCLUDED.epc,
+                active = TRUE,
+                updated_at = NOW()
+            """,
+            (serial_number, epc),
+        )
+
+
+def list_rfid_assignments(db):
+    with db.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT
+                a.id,
+                a.serial_number,
+                c.epc,
+                a.truck_id,
+                t.truck_number,
+                a.notes,
+                a.assigned_at,
+                a.updated_at
+            FROM rfid_truck_tag_assignment a
+            JOIN rfid_tag_catalog c ON c.serial_number = a.serial_number
+            JOIN trucks_main t ON t.id = a.truck_id
+            ORDER BY t.truck_number
+            """
+        )
+        return cursor.fetchall()
+
+
+def list_unassigned_rfid_tags(db):
+    with db.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT c.serial_number, c.epc
+            FROM rfid_tag_catalog c
+            LEFT JOIN rfid_truck_tag_assignment a ON a.serial_number = c.serial_number
+            WHERE COALESCE(c.active, TRUE) = TRUE
+              AND a.id IS NULL
+            ORDER BY c.serial_number
+            """
+        )
+        return cursor.fetchall()
+
+
+def list_unassigned_trucks(db):
+    with db.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT t.id, t.truck_number
+            FROM trucks_main t
+            LEFT JOIN rfid_truck_tag_assignment a ON a.truck_id = t.id
+            WHERE COALESCE(t.active, TRUE) = TRUE
+              AND a.id IS NULL
+            ORDER BY t.truck_number
+            """
+        )
+        return cursor.fetchall()
+
+
+def sync_epc_map_for_assignment(db, serial_number):
+    with db.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT c.epc, t.truck_number
+            FROM rfid_truck_tag_assignment a
+            JOIN rfid_tag_catalog c ON c.serial_number = a.serial_number
+            JOIN trucks_main t ON t.id = a.truck_id
+            WHERE a.serial_number = %s
+            LIMIT 1
+            """,
+            (serial_number,),
+        )
+        row = cursor.fetchone()
+
+    if not row:
+        return
+
+    epc = normalize_epc(row.get("epc"))
+    truck_number = str(row.get("truck_number") or "").strip()
+    if not epc or not truck_number:
+        return
+
+    with db.cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE rfid_epc_truck_map
+            SET active = FALSE,
+                updated_at = NOW()
+            WHERE LOWER(TRIM(truck_number)) = LOWER(TRIM(%s))
+              AND LOWER(TRIM(epc)) <> LOWER(TRIM(%s))
+            """,
+            (truck_number, epc),
+        )
+        cursor.execute(
+            """
+            INSERT INTO rfid_epc_truck_map (epc, truck_number, source, active, updated_at)
+            VALUES (%s, %s, %s, TRUE, NOW())
+            ON CONFLICT (epc)
+            DO UPDATE SET
+                truck_number = EXCLUDED.truck_number,
+                source = EXCLUDED.source,
+                active = TRUE,
+                updated_at = NOW()
+            """,
+            (epc, truck_number, "serial_assignment"),
+        )
+
+
+def deactivate_epc_map_for_serial(db, serial_number):
+    with db.cursor() as cursor:
+        cursor.execute("SELECT epc FROM rfid_tag_catalog WHERE serial_number = %s LIMIT 1", (serial_number,))
+        row = cursor.fetchone()
+    if not row:
+        return
+
+    epc = normalize_epc(row.get("epc"))
+    if not epc:
+        return
+
+    with db.cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE rfid_epc_truck_map
+            SET active = FALSE,
+                updated_at = NOW()
+            WHERE LOWER(TRIM(epc)) = LOWER(TRIM(%s))
+            """,
+            (epc,),
+        )
+
+
+def search_rfid_assignments(db, query):
+    query_text = str(query or "").strip()
+    with db.cursor() as cursor:
+        if not query_text:
+            cursor.execute(
+                """
+                SELECT
+                    a.id,
+                    a.serial_number,
+                    c.epc,
+                    t.truck_number,
+                    a.notes,
+                    a.assigned_at,
+                    a.updated_at
+                FROM rfid_truck_tag_assignment a
+                JOIN rfid_tag_catalog c ON c.serial_number = a.serial_number
+                JOIN trucks_main t ON t.id = a.truck_id
+                ORDER BY a.updated_at DESC
+                LIMIT 100
+                """
+            )
+            return cursor.fetchall()
+
+        wildcard = f"%{query_text}%"
+        cursor.execute(
+            """
+            SELECT
+                a.id,
+                a.serial_number,
+                c.epc,
+                t.truck_number,
+                a.notes,
+                a.assigned_at,
+                a.updated_at
+            FROM rfid_truck_tag_assignment a
+            JOIN rfid_tag_catalog c ON c.serial_number = a.serial_number
+            JOIN trucks_main t ON t.id = a.truck_id
+            WHERE t.truck_number ILIKE %s
+               OR a.serial_number ILIKE %s
+               OR c.epc ILIKE %s
+            ORDER BY a.updated_at DESC
+            LIMIT 200
+            """,
+            (wildcard, wildcard, wildcard),
+        )
+        return cursor.fetchall()
+
+
 def notification_in_cooldown(db, truck_number, source, cooldown_seconds):
     if cooldown_seconds <= 0:
         return False
@@ -2522,14 +2769,6 @@ def test():
 
 @app.post("/api/notifications/truck-seen")
 def api_notification_truck_seen():
-    
-    print("=" * 80)
-    print("RFID webhook received")
-    print("Remote IP:", request.remote_addr)
-    print("Headers:", dict(request.headers))
-    print("Raw body:", request.get_data(as_text=True))
-    print("JSON body:", request.get_json(silent=True))
-    print("=" * 80)
 
     if not NOTIFICATIONS_ENABLED:
         return {"ok": False, "error": "Notifications are temporarily disabled."}, 503
@@ -4759,6 +4998,233 @@ def generate_ticket_pdf(ticket_id):
         flash(f"Could not generate PDF: {exc}", "error")
 
     return redirect(url_for("search_tickets", ticket_number=row["ticket_number"]))
+
+
+@app.get("/rfid")
+def rfid_home():
+    db = get_db()
+    with db.cursor() as cursor:
+        cursor.execute("SELECT COUNT(1) AS count FROM rfid_tag_catalog")
+        tags_count = int((cursor.fetchone() or {}).get("count") or 0)
+        cursor.execute("SELECT COUNT(1) AS count FROM rfid_truck_tag_assignment")
+        assigned_count = int((cursor.fetchone() or {}).get("count") or 0)
+    return render_template("rfid_home.html", tags_count=tags_count, assigned_count=assigned_count)
+
+
+@app.get("/rfid/mappings")
+def rfid_mappings():
+    db = get_db()
+    assignments = list_rfid_assignments(db)
+    unassigned_tags = list_unassigned_rfid_tags(db)
+    unassigned_trucks = list_unassigned_trucks(db)
+
+    trucks_for_edit = {}
+    for assignment in assignments:
+        current_truck = {
+            "id": assignment.get("truck_id"),
+            "truck_number": assignment.get("truck_number"),
+        }
+        options = [current_truck]
+        options.extend(unassigned_trucks)
+
+        seen = set()
+        unique_options = []
+        for option in options:
+            truck_id = option.get("id")
+            if truck_id in seen:
+                continue
+            seen.add(truck_id)
+            unique_options.append(option)
+        trucks_for_edit[assignment.get("id")] = unique_options
+
+    return render_template(
+        "rfid_mappings.html",
+        assignments=assignments,
+        unassigned_tags=unassigned_tags,
+        unassigned_trucks=unassigned_trucks,
+        trucks_for_edit=trucks_for_edit,
+    )
+
+
+@app.post("/rfid/tags/import")
+def rfid_import_tags():
+    db = get_db()
+    uploaded = request.files.get("rfid_tags_file")
+    if uploaded is None or not (uploaded.filename or "").strip():
+        flash("Please choose a CSV or Excel file to upload.", "error")
+        return redirect(url_for("rfid_mappings"))
+
+    try:
+        raw_rows = parse_materials_upload_rows(uploaded, uploaded.filename)
+    except Exception as exc:
+        flash(f"Could not read upload: {exc}", "error")
+        return redirect(url_for("rfid_mappings"))
+
+    if not raw_rows:
+        flash("Uploaded file contains no data rows.", "error")
+        return redirect(url_for("rfid_mappings"))
+
+    epc_col, serial_col = resolve_rfid_upload_columns(raw_rows[0][1])
+    if not epc_col or not serial_col:
+        flash("Missing required columns. Need EPC and serial_number (or serial/sticker_number).", "error")
+        return redirect(url_for("rfid_mappings"))
+
+    created = 0
+    updated = 0
+    skipped = 0
+    conflicts = []
+
+    for row_number, row in raw_rows:
+        epc = normalize_epc(row.get(epc_col))
+        serial_number = normalize_serial_number(row.get(serial_col))
+        if not epc or not serial_number:
+            skipped += 1
+            continue
+
+        try:
+            with db.cursor() as cursor:
+                cursor.execute("SELECT serial_number FROM rfid_tag_catalog WHERE LOWER(TRIM(epc)) = LOWER(TRIM(%s)) LIMIT 1", (epc,))
+                epc_owner = cursor.fetchone()
+                if epc_owner and str(epc_owner.get("serial_number") or "").strip().upper() != serial_number:
+                    conflicts.append(f"Row {row_number}: EPC {epc} already belongs to serial {epc_owner.get('serial_number')}")
+                    continue
+
+                cursor.execute("SELECT epc FROM rfid_tag_catalog WHERE LOWER(TRIM(serial_number)) = LOWER(TRIM(%s)) LIMIT 1", (serial_number,))
+                serial_owner = cursor.fetchone()
+                existing_epc = normalize_epc(serial_owner.get("epc")) if serial_owner else ""
+
+            upsert_rfid_tag_catalog_row(db, serial_number=serial_number, epc=epc)
+            if serial_owner and existing_epc == epc:
+                updated += 1
+            elif serial_owner:
+                updated += 1
+            else:
+                created += 1
+        except Exception as exc:
+            conflicts.append(f"Row {row_number}: {exc}")
+
+    if conflicts:
+        db.rollback()
+        preview = "; ".join(conflicts[:3])
+        if len(conflicts) > 3:
+            preview += f"; and {len(conflicts) - 3} more"
+        flash(f"Import failed due to conflicts. {preview}", "error")
+        return redirect(url_for("rfid_mappings"))
+
+    db.commit()
+    flash(f"RFID tag import complete. Created: {created}, Updated: {updated}, Skipped: {skipped}.", "success")
+    return redirect(url_for("rfid_mappings"))
+
+
+@app.post("/rfid/mappings/assign")
+def rfid_assign_mapping():
+    db = get_db()
+    serial_number = normalize_serial_number(request.form.get("serial_number"))
+    truck_id_raw = str(request.form.get("truck_id") or "").strip()
+    notes = str(request.form.get("notes") or "").strip()
+
+    if not serial_number or not truck_id_raw.isdigit():
+        flash("Serial number and truck are required.", "error")
+        return redirect(url_for("rfid_mappings"))
+
+    truck_id = int(truck_id_raw)
+    with db.cursor() as cursor:
+        cursor.execute("SELECT serial_number FROM rfid_tag_catalog WHERE LOWER(TRIM(serial_number)) = LOWER(TRIM(%s)) LIMIT 1", (serial_number,))
+        if not cursor.fetchone():
+            flash("Selected serial number does not exist in RFID tag catalog.", "error")
+            return redirect(url_for("rfid_mappings"))
+
+        cursor.execute("SELECT id FROM rfid_truck_tag_assignment WHERE LOWER(TRIM(serial_number)) = LOWER(TRIM(%s)) LIMIT 1", (serial_number,))
+        if cursor.fetchone():
+            flash("This serial number is already assigned to a truck.", "error")
+            return redirect(url_for("rfid_mappings"))
+
+        cursor.execute("SELECT id FROM rfid_truck_tag_assignment WHERE truck_id = %s LIMIT 1", (truck_id,))
+        if cursor.fetchone():
+            flash("This truck is already assigned to another serial number.", "error")
+            return redirect(url_for("rfid_mappings"))
+
+        cursor.execute(
+            """
+            INSERT INTO rfid_truck_tag_assignment (serial_number, truck_id, notes, assigned_at, updated_at)
+            VALUES (%s, %s, %s, NOW(), NOW())
+            """,
+            (serial_number, truck_id, notes),
+        )
+
+    sync_epc_map_for_assignment(db, serial_number)
+    db.commit()
+    flash("RFID serial assigned to truck.", "success")
+    return redirect(url_for("rfid_mappings"))
+
+
+@app.post("/rfid/mappings/<int:assignment_id>/update")
+def rfid_update_mapping(assignment_id):
+    db = get_db()
+    truck_id_raw = str(request.form.get("truck_id") or "").strip()
+    notes = str(request.form.get("notes") or "").strip()
+    if not truck_id_raw.isdigit():
+        flash("Please select a valid truck.", "error")
+        return redirect(url_for("rfid_mappings"))
+    truck_id = int(truck_id_raw)
+
+    with db.cursor() as cursor:
+        cursor.execute("SELECT id, serial_number, truck_id FROM rfid_truck_tag_assignment WHERE id = %s LIMIT 1", (assignment_id,))
+        assignment = cursor.fetchone()
+        if not assignment:
+            flash("Mapping not found.", "error")
+            return redirect(url_for("rfid_mappings"))
+
+        current_truck_id = int(assignment.get("truck_id") or 0)
+        if truck_id != current_truck_id:
+            cursor.execute("SELECT id FROM rfid_truck_tag_assignment WHERE truck_id = %s AND id <> %s LIMIT 1", (truck_id, assignment_id))
+            if cursor.fetchone():
+                flash("Selected truck is already mapped to another serial.", "error")
+                return redirect(url_for("rfid_mappings"))
+
+        cursor.execute(
+            """
+            UPDATE rfid_truck_tag_assignment
+            SET truck_id = %s,
+                notes = %s,
+                updated_at = NOW()
+            WHERE id = %s
+            """,
+            (truck_id, notes, assignment_id),
+        )
+        serial_number = str(assignment.get("serial_number") or "").strip()
+
+    sync_epc_map_for_assignment(db, serial_number)
+    db.commit()
+    flash("RFID mapping updated.", "success")
+    return redirect(url_for("rfid_mappings"))
+
+
+@app.post("/rfid/mappings/<int:assignment_id>/remove")
+def rfid_remove_mapping(assignment_id):
+    db = get_db()
+    with db.cursor() as cursor:
+        cursor.execute("SELECT serial_number FROM rfid_truck_tag_assignment WHERE id = %s LIMIT 1", (assignment_id,))
+        row = cursor.fetchone()
+        if not row:
+            flash("Mapping not found.", "error")
+            return redirect(url_for("rfid_mappings"))
+        serial_number = str(row.get("serial_number") or "").strip()
+
+        cursor.execute("DELETE FROM rfid_truck_tag_assignment WHERE id = %s", (assignment_id,))
+
+    deactivate_epc_map_for_serial(db, serial_number)
+    db.commit()
+    flash("RFID mapping removed.", "success")
+    return redirect(url_for("rfid_mappings"))
+
+
+@app.get("/rfid/lookup")
+def rfid_lookup():
+    db = get_db()
+    query = str(request.args.get("q") or "").strip()
+    rows = search_rfid_assignments(db, query)
+    return render_template("rfid_lookup.html", rows=rows, query=query)
 
 
 @app.post("/tickets/<int:ticket_id>/void")

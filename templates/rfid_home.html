@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+    <h2>RFID</h2>
+    <p>Manage RFID tags, one-to-one truck mappings, and lookup existing attachments.</p>
+    <p><strong>Tag Catalog:</strong> {{ tags_count }} | <strong>Mapped Trucks:</strong> {{ assigned_count }}</p>
+    <div class="actions" style="display:flex;gap:12px;flex-wrap:wrap;">
+        <a href="{{ url_for('rfid_mappings') }}">Tag New Trucks / Edit Mapping</a>
+        <a href="{{ url_for('rfid_lookup') }}">Quick Lookup</a>
+    </div>
+</section>
+{% endblock %}

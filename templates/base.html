@@ -23,6 +23,7 @@
             <a href="{{ url_for('admin_trucks') }}">Trucks</a>
             <a href="{{ url_for('edit_trucks') }}">Edit Trucks</a>
             <a href="{{ url_for('admin_materials') }}">Materials</a>
+            <a href="{{ url_for('rfid_home') }}">RFID</a>
             {% if session.get("logged_in") and config.get("NOTIFICATIONS_ENABLED") %}
                 <div class="notification-bell-wrap">
                     <button type="button" id="notification_bell_btn" class="notification-bell-btn" aria-label="Open notifications" aria-expanded="false">
@@ -70,6 +71,66 @@
 
                 let isPolling = false;
                 let notifications = [];
+                let knownNotificationIds = new Set();
+                let initialized = false;
+
+                function ensureToastStack() {
+                    let stack = document.getElementById("notification_toast_stack");
+                    if (stack) {
+                        return stack;
+                    }
+                    stack = document.createElement("div");
+                    stack.id = "notification_toast_stack";
+                    stack.className = "notification-toast-stack";
+                    document.body.appendChild(stack);
+                    return stack;
+                }
+
+                function showNotificationToast(notification) {
+                    const stack = ensureToastStack();
+                    const toast = document.createElement("div");
+                    toast.className = "notification-toast";
+
+                    const title = document.createElement("div");
+                    title.className = "notification-toast-title";
+                    title.textContent = "New Truck Alert";
+
+                    const message = document.createElement("div");
+                    message.className = "notification-toast-message";
+                    message.textContent = notification.message || ("Known truck appeared: " + (notification.truck_number || ""));
+
+                    toast.appendChild(title);
+                    toast.appendChild(message);
+                    stack.appendChild(toast);
+
+                    window.setTimeout(function () {
+                        toast.classList.add("hide");
+                        window.setTimeout(function () {
+                            if (toast.parentNode) {
+                                toast.parentNode.removeChild(toast);
+                            }
+                        }, 260);
+                    }, 5000);
+                }
+
+                function isNotificationForToday(notification) {
+                    const raw = notification && (notification.detected_at || notification.created_at);
+                    if (!raw) {
+                        return false;
+                    }
+                    const d = new Date(raw);
+                    if (Number.isNaN(d.getTime())) {
+                        return false;
+                    }
+                    const now = new Date();
+                    return d.getFullYear() === now.getFullYear()
+                        && d.getMonth() === now.getMonth()
+                        && d.getDate() === now.getDate();
+                }
+
+                function filterTodayNotifications(items) {
+                    return (items || []).filter(isNotificationForToday);
+                }
 
                 function formatTime(value) {
                     if (!value) {
@@ -95,8 +156,10 @@
                     if (pendingCount > 0) {
                         bellCount.hidden = false;
                         bellCount.textContent = String(pendingCount > 99 ? "99+" : pendingCount);
+                        bellButton.classList.add("has-pending");
                     } else {
                         bellCount.hidden = true;
+                        bellButton.classList.remove("has-pending");
                     }
                 }
 
@@ -106,7 +169,7 @@
                     if (!notifications.length) {
                         const empty = document.createElement("div");
                         empty.className = "notification-empty";
-                        empty.textContent = "No notifications yet.";
+                        empty.textContent = "No notifications for today.";
                         list.appendChild(empty);
                         return;
                     }
@@ -185,7 +248,27 @@
                             if (!payload || !payload.ok) {
                                 return;
                             }
-                            notifications = Array.isArray(payload.notifications) ? payload.notifications : [];
+
+                            const incoming = filterTodayNotifications(Array.isArray(payload.notifications) ? payload.notifications : []);
+                            notifications = incoming;
+
+                            if (!initialized) {
+                                incoming.forEach(function (n) {
+                                    knownNotificationIds.add(String(n.id));
+                                });
+                                initialized = true;
+                            } else {
+                                incoming.forEach(function (n) {
+                                    const id = String(n.id);
+                                    if (!knownNotificationIds.has(id)) {
+                                        knownNotificationIds.add(id);
+                                        if (n.status === "pending") {
+                                            showNotificationToast(n);
+                                        }
+                                    }
+                                });
+                            }
+
                             updateBadge();
                             renderList();
                         })

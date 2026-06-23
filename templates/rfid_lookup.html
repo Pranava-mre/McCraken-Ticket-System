@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+    <h2>RFID Quick Lookup</h2>
+    <form method="get" class="form-grid">
+        <label class="full">Search by Truck, Serial, or EPC
+            <input type="text" name="q" value="{{ query }}" placeholder="e.g. TRK-102, 25, E200...">
+        </label>
+        <div class="actions full">
+            <button type="submit">Search</button>
+            <a href="{{ url_for('rfid_lookup') }}">Clear</a>
+        </div>
+    </form>
+</section>
+
+<section class="card">
+    <h3>Results</h3>
+    {% if rows %}
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Truck</th>
+                        <th>Serial</th>
+                        <th>EPC</th>
+                        <th>Notes</th>
+                        <th>Updated</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in rows %}
+                        <tr>
+                            <td>{{ row.truck_number }}</td>
+                            <td>{{ row.serial_number }}</td>
+                            <td>{{ row.epc }}</td>
+                            <td>{{ row.notes or '' }}</td>
+                            <td>{{ row.updated_at|ticket_datetime }}</td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    {% else %}
+        <p>No matching RFID mapping records found.</p>
+    {% endif %}
+</section>
+{% endblock %}

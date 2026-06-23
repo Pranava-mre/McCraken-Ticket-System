@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+    <h2>RFID Tag Mapping</h2>
+    <p>One serial number maps to one truck, and each truck maps to one serial number.</p>
+</section>
+
+<section class="card">
+    <h3>Import RFID Tag Catalog</h3>
+    <p>Upload CSV or Excel with columns for EPC and serial number.</p>
+    <form method="post" action="{{ url_for('rfid_import_tags') }}" enctype="multipart/form-data" class="form-grid">
+        <label>RFID File
+            <input type="file" name="rfid_tags_file" accept=".csv,.xlsx" required>
+        </label>
+        <div class="actions full">
+            <button type="submit">Import Tags</button>
+        </div>
+    </form>
+</section>
+
+<section class="card">
+    <h3>Tag New Truck</h3>
+    {% if not unassigned_tags %}
+        <p>All serial numbers are already mapped. Import more tags or edit existing mapping.</p>
+    {% elif not unassigned_trucks %}
+        <p>All active trucks are already mapped. Edit existing mapping to reassign.</p>
+    {% else %}
+        <form method="post" action="{{ url_for('rfid_assign_mapping') }}" class="form-grid">
+            <label>Serial Number
+                <select name="serial_number" required>
+                    <option value="" disabled selected>Select serial</option>
+                    {% for tag in unassigned_tags %}
+                        <option value="{{ tag.serial_number }}">{{ tag.serial_number }} ({{ tag.epc }})</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>Truck
+                <select name="truck_id" required>
+                    <option value="" disabled selected>Select truck</option>
+                    {% for truck in unassigned_trucks %}
+                        <option value="{{ truck.id }}">{{ truck.truck_number }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label class="full">Notes
+                <input type="text" name="notes" placeholder="Optional note">
+            </label>
+            <div class="actions full">
+                <button type="submit">Assign Serial To Truck</button>
+            </div>
+        </form>
+    {% endif %}
+</section>
+
+<section class="card">
+    <h3>Existing Mappings</h3>
+    {% if assignments %}
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Truck</th>
+                        <th>Serial</th>
+                        <th>EPC</th>
+                        <th>Notes</th>
+                        <th>Assigned</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in assignments %}
+                        <tr>
+                            <td>{{ row.truck_number }}</td>
+                            <td>{{ row.serial_number }}</td>
+                            <td>{{ row.epc }}</td>
+                            <td>{{ row.notes or '' }}</td>
+                            <td>{{ row.assigned_at|ticket_datetime }}</td>
+                            <td>
+                                <form method="post" action="{{ url_for('rfid_update_mapping', assignment_id=row.id) }}" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+                                    <select name="truck_id" required>
+                                        {% for truck in trucks_for_edit.get(row.id, []) %}
+                                            <option value="{{ truck.id }}" {% if truck.id == row.truck_id %}selected{% endif %}>{{ truck.truck_number }}</option>
+                                        {% endfor %}
+                                    </select>
+                                    <input type="text" name="notes" value="{{ row.notes or '' }}" placeholder="Notes" style="min-width:150px;">
+                                    <button type="submit">Save</button>
+                                </form>
+                                <form method="post" action="{{ url_for('rfid_remove_mapping', assignment_id=row.id) }}" style="margin-top:6px;" onsubmit="return confirm('Remove this RFID mapping?');">
+                                    <button type="submit" class="danger">Remove</button>
+                                </form>
+                            </td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    {% else %}
+        <p>No mappings yet.</p>
+    {% endif %}
+</section>
+{% endblock %}
