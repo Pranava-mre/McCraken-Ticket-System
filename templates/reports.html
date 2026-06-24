@@ -20,34 +20,33 @@
         </label>
 
         <label>Job
-            <select name="job_id">
-                <option value="">All jobs</option>
+            <input type="text" id="report_job_search" name="job_entry" list="report_jobs_list" value="{{ filters.job_entry or '' }}" placeholder="Type to search jobs">
+            <input type="hidden" id="report_job_id" name="job_id" value="{{ filters.job_id }}">
+            <datalist id="report_jobs_list">
                 {% for job in jobs %}
-                    <option value="{{ job.id }}" {% if filters.job_id == (job.id|string) %}selected{% endif %}>
-                        {{ job.job_code }} - {{ job.job_name }}
-                    </option>
+                    <option value="{{ job.job_code }} - {{ job.job_name }}" data-id="{{ job.job_key }}"></option>
                 {% endfor %}
-            </select>
+            </datalist>
         </label>
 
         <label>Customer
-            <input type="text" name="customer" list="customers_list" value="{{ filters.customer }}" placeholder="Select Customer">
-            <datalist id="customers_list">
+            <input type="text" id="report_customer_search" name="customer" list="report_customers_list" value="{{ filters.customer }}" placeholder="Type to search customers">
+            <input type="hidden" id="report_customer_id" name="customer_id" value="{{ filters.customer_id or '' }}">
+            <datalist id="report_customers_list">
                 {% for c in customers %}
-                    <option value="{{ c.customer_name }}"></option>
+                    <option value="{{ c.customer_name }}" data-id="{{ c.id }}"></option>
                 {% endfor %}
             </datalist>
         </label>
 
         <label>Material
-            <select name="material_id">
-                <option value="">All materials</option>
+            <input type="text" id="report_material_search" name="material_entry" list="report_materials_list" value="{{ filters.material_entry or '' }}" placeholder="Type to search materials">
+            <input type="hidden" id="report_material_id" name="material_id" value="{{ filters.material_id }}">
+            <datalist id="report_materials_list">
                 {% for material in materials %}
-                    <option value="{{ material.id }}" {% if filters.material_id == (material.id|string) %}selected{% endif %}>
-                        {{ material.material_name }}
-                    </option>
+                    <option value="{{ material.material_name }}" data-id="{{ material.id }}"></option>
                 {% endfor %}
-            </select>
+            </datalist>
         </label>
 
         <div class="actions full report-actions">
@@ -57,8 +56,11 @@
                     date_to=filters.date_to,
                     direction=filters.direction,
                     job_id=filters.job_id,
+                    job_entry=filters.job_entry,
+                    customer_id=filters.customer_id,
                     customer=filters.customer,
-                    material_id=filters.material_id) }}">
+                    material_id=filters.material_id,
+                    material_entry=filters.material_entry) }}">
                     Print Report
                 </a>
                 <a href="{{ url_for('print_customer_reports',
@@ -66,13 +68,16 @@
                     date_to=filters.date_to,
                     direction=filters.direction,
                     job_id=filters.job_id,
+                    job_entry=filters.job_entry,
+                    customer_id=filters.customer_id,
                     customer=filters.customer,
-                    material_id=filters.material_id) }}">
+                    material_id=filters.material_id,
+                    material_entry=filters.material_entry) }}">
                     Print Customer Report
                 </a>
             <a class="report-daily-cta" href="{{ url_for('daily_report_dashboard') }}" target="_blank" rel="noopener">Daily Report</a>
 
-            <a href="{{ url_for('export_reports_csv', date_from=filters.date_from, date_to=filters.date_to, direction=filters.direction, job_id=filters.job_id, customer=filters.customer, material_id=filters.material_id) }}">Export CSV</a>
+            <a href="{{ url_for('export_reports_csv', date_from=filters.date_from, date_to=filters.date_to, direction=filters.direction, job_id=filters.job_id, job_entry=filters.job_entry, customer_id=filters.customer_id, customer=filters.customer, material_id=filters.material_id, material_entry=filters.material_entry) }}">Export CSV</a>
             <a href="{{ url_for('reports') }}">Clear</a>
         </div>
     </form>
@@ -205,8 +210,11 @@
                 date_to=filters.date_to,
                 direction=filters.direction,
                 job_id=filters.job_id,
+                job_entry=filters.job_entry,
+                customer_id=filters.customer_id,
                 customer=filters.customer,
                 material_id=filters.material_id,
+                material_entry=filters.material_entry,
                 offset=offset+20) }}">
                 Show More
             </a>
@@ -216,4 +224,42 @@
         <p>No matching tickets.</p>
     {% endif %}
 </section>
+<script>
+(() => {
+    const jobInput = document.getElementById("report_job_search");
+    const jobIdInput = document.getElementById("report_job_id");
+    const jobsList = document.getElementById("report_jobs_list");
+    const customerInput = document.getElementById("report_customer_search");
+    const customerIdInput = document.getElementById("report_customer_id");
+    const customersList = document.getElementById("report_customers_list");
+    const materialInput = document.getElementById("report_material_search");
+    const materialIdInput = document.getElementById("report_material_id");
+    const materialsList = document.getElementById("report_materials_list");
+    if (!jobInput || !jobIdInput || !jobsList || !customerInput || !customerIdInput || !customersList || !materialInput || !materialIdInput || !materialsList) {
+        return;
+    }
+
+    const syncSelectedJob = () => {
+        const selectedOption = Array.from(jobsList.options).find((option) => option.value === jobInput.value);
+        jobIdInput.value = selectedOption ? (selectedOption.dataset.id || "") : "";
+    };
+
+    const syncSelectedCustomer = () => {
+        const selectedOption = Array.from(customersList.options).find((option) => option.value === customerInput.value);
+        customerIdInput.value = selectedOption ? (selectedOption.dataset.id || "") : "";
+    };
+
+    const syncSelectedMaterial = () => {
+        const selectedOption = Array.from(materialsList.options).find((option) => option.value === materialInput.value);
+        materialIdInput.value = selectedOption ? (selectedOption.dataset.id || "") : "";
+    };
+
+    jobInput.addEventListener("input", syncSelectedJob);
+    jobInput.addEventListener("change", syncSelectedJob);
+    customerInput.addEventListener("input", syncSelectedCustomer);
+    customerInput.addEventListener("change", syncSelectedCustomer);
+    materialInput.addEventListener("input", syncSelectedMaterial);
+    materialInput.addEventListener("change", syncSelectedMaterial);
+})();
+</script>
 {% endblock %}

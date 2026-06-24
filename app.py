@@ -2351,6 +2351,109 @@ def get_selected_job(db, selected_job_id):
 
     return None, None
 
+
+def apply_reports_job_filter(db, where, params, selected_job_id="", job_entry=""):
+    selected_job_id = str(selected_job_id or "").strip()
+    job_entry = str(job_entry or "").strip()
+
+    if selected_job_id:
+        selected_job, selected_source = get_selected_job(db, selected_job_id)
+        if selected_job:
+            if selected_source == "cache":
+                where.append("t.job_id = %s")
+                params.append(selected_job["id"])
+                return
+
+            where.append("t.job_id IS NULL")
+            where.append("COALESCE(t.job_code_snapshot, '') = %s")
+            params.append(str(selected_job.get("job_code") or "").strip())
+            where.append("COALESCE(t.job_name_snapshot, '') = %s")
+            params.append(str(selected_job.get("job_name") or "").strip())
+            return
+
+        if selected_job_id.isdigit():
+            where.append("t.job_id = %s")
+            params.append(selected_job_id)
+            return
+
+    if job_entry:
+        like_term = f"%{job_entry}%"
+        where.append(
+            "(" 
+            "COALESCE(t.job_code_snapshot, '') ILIKE %s OR "
+            "COALESCE(t.job_name_snapshot, '') ILIKE %s OR "
+            "(COALESCE(t.job_code_snapshot, '') || ' - ' || COALESCE(t.job_name_snapshot, '')) ILIKE %s"
+            ")"
+        )
+        params.extend([like_term, like_term, like_term])
+
+
+def get_job_entry_display(db, selected_job_id):
+    selected_job, _selected_source = get_selected_job(db, selected_job_id)
+    if not selected_job:
+        return ""
+    job_code = str(selected_job.get("job_code") or "").strip()
+    job_name = str(selected_job.get("job_name") or "").strip()
+    if job_code and job_name:
+        return f"{job_code} - {job_name}"
+    return job_code or job_name
+
+
+def apply_reports_customer_filter(db, where, params, customer_id="", customer=""):
+    customer_id = str(customer_id or "").strip()
+    customer = str(customer or "").strip()
+
+    if customer_id.isdigit():
+        with db.cursor() as cursor:
+            cursor.execute("SELECT customer_name FROM customers WHERE id = %s", (customer_id,))
+            customer_row = cursor.fetchone()
+        if customer_row and str(customer_row.get("customer_name") or "").strip():
+            where.append("LOWER(TRIM(COALESCE(t.customer_snapshot, ''))) = LOWER(TRIM(%s))")
+            params.append(str(customer_row.get("customer_name") or "").strip())
+            return
+
+    if customer:
+        where.append("t.customer_snapshot ILIKE %s")
+        params.append(f"%{customer}%")
+
+
+def get_customer_display_by_id(db, customer_id):
+    customer_id = str(customer_id or "").strip()
+    if not customer_id.isdigit():
+        return ""
+    with db.cursor() as cursor:
+        cursor.execute("SELECT customer_name FROM customers WHERE id = %s", (customer_id,))
+        customer_row = cursor.fetchone()
+    if not customer_row:
+        return ""
+    return str(customer_row.get("customer_name") or "").strip()
+
+
+def apply_reports_material_filter(where, params, material_id="", material_entry=""):
+    material_id = str(material_id or "").strip()
+    material_entry = str(material_entry or "").strip()
+
+    if material_id.isdigit():
+        where.append("t.material_id = %s")
+        params.append(material_id)
+        return
+
+    if material_entry:
+        where.append("COALESCE(t.material_name_snapshot, '') ILIKE %s")
+        params.append(f"%{material_entry}%")
+
+
+def get_material_entry_display(db, material_id):
+    material_id = str(material_id or "").strip()
+    if not material_id.isdigit():
+        return ""
+    with db.cursor() as cursor:
+        cursor.execute("SELECT material FROM material_price WHERE id = %s", (material_id,))
+        material_row = cursor.fetchone()
+    if not material_row:
+        return ""
+    return str(material_row.get("material") or "").strip()
+
 # def list_trucks(db):
 #     return db.execute(
 #         "SELECT id, truck_number, description, truck_size, hauled_by, active FROM trucks WHERE active = 1 ORDER BY truck_number"
@@ -3989,8 +4092,11 @@ def reports():
     date_to = request.args.get("date_to", "").strip()
     direction = request.args.get("direction", "").strip().upper()
     job_id = request.args.get("job_id", "").strip()
+    job_entry = request.args.get("job_entry", "").strip()
+    customer_id = request.args.get("customer_id", "").strip()
     customer = request.args.get("customer", "").strip()
     material_id = request.args.get("material_id", "").strip()
+    material_entry = request.args.get("material_entry", "").strip()
     offset = int(request.args.get("offset", 0))
     if not date_from and not date_to:
         date_to = app_now().date().isoformat()
@@ -4008,15 +4114,9 @@ def reports():
     if direction in {"IN", "OUT"}:
         where.append("t.direction = %s")
         params.append(direction)
-    if job_id:
-        where.append("t.job_id = %s")
-        params.append(job_id)
-    if customer:
-        where.append("t.customer_snapshot ILIKE %s")
-        params.append(f"%{customer}%")
-    if material_id:
-        where.append("t.material_id = %s")
-        params.append(material_id)
+    apply_reports_job_filter(db, where, params, selected_job_id=job_id, job_entry=job_entry)
+    apply_reports_customer_filter(db, where, params, customer_id=customer_id, customer=customer)
+    apply_reports_material_filter(where, params, material_id=material_id, material_entry=material_entry)
 
     where_sql = " AND ".join(where)
     app.logger.debug("Report query WHERE clause: %s with params %s", where_sql, params)
@@ -4102,6 +4202,13 @@ def reports():
         )
         totals_by_direction = cursor.fetchall()
 
+    if not job_entry and job_id:
+        job_entry = get_job_entry_display(db, job_id)
+    if not customer and customer_id:
+        customer = get_customer_display_by_id(db, customer_id)
+    if not material_entry and material_id:
+        material_entry = get_material_entry_display(db, material_id)
+
     return render_template(
         "reports.html",
         tickets=tickets,
@@ -4110,7 +4217,7 @@ def reports():
         totals_by_unit=totals_by_unit,
         totals_by_material=totals_by_material,
         totals_by_direction=totals_by_direction,
-        jobs=list_jobs(db),
+        jobs=list_ticket_jobs(db),
         customers=list_customers(db),
         materials=list_materials(db,direction=direction),
         filters={
@@ -4118,8 +4225,11 @@ def reports():
             "date_to": date_to,
             "direction": direction,
             "job_id": job_id,
+            "job_entry": job_entry,
+            "customer_id": customer_id,
             "customer": customer,
             "material_id": material_id,
+            "material_entry": material_entry,
         },
     )
 
@@ -4131,8 +4241,11 @@ def export_reports_csv():
     date_to = request.args.get("date_to", "").strip()
     direction = request.args.get("direction", "").strip().upper()
     job_id = request.args.get("job_id", "").strip()
+    job_entry = request.args.get("job_entry", "").strip()
+    customer_id = request.args.get("customer_id", "").strip()
     customer = request.args.get("customer", "").strip()
     material_id = request.args.get("material_id", "").strip()
+    material_entry = request.args.get("material_entry", "").strip()
 
     where = ["COALESCE(t.active, TRUE) = TRUE"]
     params = []
@@ -4146,15 +4259,9 @@ def export_reports_csv():
     if direction in {"IN", "OUT"}:
         where.append("t.direction = %s")
         params.append(direction)
-    if job_id:
-        where.append("t.job_id = %s")
-        params.append(job_id)
-    if customer:
-        where.append("t.customer_snapshot ILIKE %s")
-        params.append(f"%{customer}%")
-    if material_id:
-        where.append("t.material_id = %s")
-        params.append(material_id)
+    apply_reports_job_filter(db, where, params, selected_job_id=job_id, job_entry=job_entry)
+    apply_reports_customer_filter(db, where, params, customer_id=customer_id, customer=customer)
+    apply_reports_material_filter(where, params, material_id=material_id, material_entry=material_entry)
 
     where_sql = " AND ".join(where)
 
@@ -4498,8 +4605,11 @@ def print_reports():
     date_to = request.args.get("date_to", "")
     direction = request.args.get("direction", "")
     job_id = request.args.get("job_id", "")
+    job_entry = request.args.get("job_entry", "").strip()
+    customer_id = request.args.get("customer_id", "").strip()
     customer = request.args.get("customer", "").strip()
     material_id = request.args.get("material_id", "")
+    material_entry = request.args.get("material_entry", "").strip()
 
     where = ["COALESCE(t.active, TRUE)=TRUE"]
     params = []
@@ -4516,17 +4626,14 @@ def print_reports():
         where.append("t.direction=%s")
         params.append(direction)
 
-    if job_id:
-        where.append("t.job_id=%s")
-        params.append(job_id)
+    apply_reports_job_filter(db, where, params, selected_job_id=job_id, job_entry=job_entry)
+    apply_reports_customer_filter(db, where, params, customer_id=customer_id, customer=customer)
+    apply_reports_material_filter(where, params, material_id=material_id, material_entry=material_entry)
 
-    if customer:
-        where.append("t.customer_snapshot ILIKE %s")
-        params.append(f"%{customer}%")
-
-    if material_id:
-        where.append("t.material_id=%s")
-        params.append(material_id)
+    if not customer and customer_id:
+        customer = get_customer_display_by_id(db, customer_id)
+    if not material_entry and material_id:
+        material_entry = get_material_entry_display(db, material_id)
 
     where_sql = " AND ".join(where)
 
@@ -4589,6 +4696,7 @@ def print_reports():
             "job_id": job_id,
             "customer": customer,
             "material_id": material_id,
+            "material_entry": material_entry,
         },
     )
 
@@ -4661,8 +4769,11 @@ def print_customer_reports():
     date_to = request.args.get("date_to", "")
     direction = request.args.get("direction", "")
     job_id = request.args.get("job_id", "")
+    job_entry = request.args.get("job_entry", "").strip()
+    customer_id = request.args.get("customer_id", "").strip()
     customer = request.args.get("customer", "").strip()
     material_id = request.args.get("material_id", "")
+    material_entry = request.args.get("material_entry", "").strip()
 
     where = ["COALESCE(t.active, TRUE)=TRUE"]
     params = []
@@ -4679,17 +4790,9 @@ def print_customer_reports():
         where.append("t.direction=%s")
         params.append(direction)
 
-    if job_id:
-        where.append("t.job_id=%s")
-        params.append(job_id)
-
-    if customer:
-        where.append("t.customer_snapshot ILIKE %s")
-        params.append(f"%{customer}%")
-
-    if material_id:
-        where.append("t.material_id=%s")
-        params.append(material_id)
+    apply_reports_job_filter(db, where, params, selected_job_id=job_id, job_entry=job_entry)
+    apply_reports_customer_filter(db, where, params, customer_id=customer_id, customer=customer)
+    apply_reports_material_filter(where, params, material_id=material_id, material_entry=material_entry)
 
     where_sql = " AND ".join(where)
 
@@ -4715,37 +4818,15 @@ def print_customer_reports():
 
     job_label = ""
     if job_id:
-        with db.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT job_code, job_name
-                FROM jobs_cache
-                WHERE id=%s
-                LIMIT 1
-                """,
-                (job_id,),
-            )
-            job_row = cursor.fetchone()
-            if job_row:
-                job_code = str(job_row.get("job_code") or "").strip()
-                job_name = str(job_row.get("job_name") or "").strip()
-                job_label = " - ".join([p for p in [job_code, job_name] if p])
+        job_label = get_job_entry_display(db, job_id)
+    if not job_label and job_entry:
+        job_label = job_entry
 
     material_label = ""
     if material_id:
-        with db.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT material_name
-                FROM materials_main
-                WHERE id=%s
-                LIMIT 1
-                """,
-                (material_id,),
-            )
-            material_row = cursor.fetchone()
-            if material_row:
-                material_label = str(material_row.get("material_name") or "").strip()
+        material_label = get_material_entry_display(db, material_id)
+    if not material_label and material_entry:
+        material_label = material_entry
 
     pdf_bytes = customer_grouped_report_to_pdf_bytes(
         rows,
