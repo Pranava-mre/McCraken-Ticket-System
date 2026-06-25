@@ -3799,7 +3799,27 @@ def edit_tickets():
         jobs = list_ticket_jobs(db)
         customers = list_customers(db)
         trucks = list_trucks(db)
-        materials = list_materials(db)
+        with db.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    material AS material_name,
+                    direction,
+                    axle_1,
+                    tandem,
+                    triaxle,
+                    axle_4_5,
+                    axle_6,
+                    semi,
+                    hydvac,
+                    dirt_in
+                FROM material_price
+                WHERE active = TRUE
+                ORDER BY material
+                """
+            )
+            materials = cursor.fetchall()
 
         manual_lookup = {}
         with db.cursor() as cursor:
@@ -3916,14 +3936,32 @@ def save_ticket_edit(ticket_id):
             return redirect(url_for("edit_tickets", **filter_args))
 
         with db.cursor() as cursor:
-            cursor.execute("SELECT id, truck_number FROM trucks_main WHERE id = %s", (truck_id,))
+            cursor.execute("SELECT id, truck_number, truck_size FROM trucks_main WHERE id = %s", (truck_id,))
             selected_truck = cursor.fetchone()
         if not selected_truck:
             flash("Selected truck was not found.", "error")
             return redirect(url_for("edit_tickets", **filter_args))
 
         with db.cursor() as cursor:
-            cursor.execute("SELECT id, material AS material_name, direction FROM material_price WHERE id = %s", (material_id,))
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    material AS material_name,
+                    direction,
+                    axle_1,
+                    tandem,
+                    triaxle,
+                    axle_4_5,
+                    axle_6,
+                    semi,
+                    hydvac,
+                    dirt_in
+                FROM material_price
+                WHERE id = %s
+                """,
+                (material_id,),
+            )
             selected_material = cursor.fetchone()
         if not selected_material:
             flash("Selected material was not found.", "error")
@@ -3955,10 +3993,11 @@ def save_ticket_edit(ticket_id):
 
         try:
             quantity = float(request.form.get("quantity", "").strip())
-            cost = float(request.form.get("cost", "").strip())
         except ValueError:
-            flash("Quantity and cost must be numeric.", "error")
+            flash("Quantity must be numeric.", "error")
             return redirect(url_for("edit_tickets", **filter_args))
+
+        cost = calculate_ticket_cost(selected_truck, selected_material, quantity)
 
         ticket_number = str(old_row.get("ticket_number") or "").strip()
         if not ticket_number:

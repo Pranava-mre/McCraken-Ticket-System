@@ -105,6 +105,7 @@
                             {% for tr in trucks %}
                             <option
                                 value="{{ tr.id }}"
+                                data-truck-size="{{ tr.truck_size or '' }}"
                                 {% if (selected_ticket.truck_id and tr.id == selected_ticket.truck_id) or (tr.truck_number == selected_ticket.truck_number_snapshot) %}selected{% endif %}
                             >
                                 {{ tr.truck_number }}
@@ -126,6 +127,14 @@
                             <option
                                 value="{{ m.id }}"
                                 data-direction="{{ m.direction }}"
+                                data-axle1="{{ m.axle_1 if m.axle_1 is not none else '' }}"
+                                data-tandem="{{ m.tandem if m.tandem is not none else '' }}"
+                                data-triaxle="{{ m.triaxle if m.triaxle is not none else '' }}"
+                                data-axle45="{{ m.axle_4_5 if m.axle_4_5 is not none else '' }}"
+                                data-axle6="{{ m.axle_6 if m.axle_6 is not none else '' }}"
+                                data-semi="{{ m.semi if m.semi is not none else '' }}"
+                                data-hydvac="{{ m.hydvac if m.hydvac is not none else '' }}"
+                                data-dirtIn="{{ m.dirt_in if m.dirt_in is not none else '' }}"
                                 {% if (selected_ticket.material_id and m.id == selected_ticket.material_id) or (m.material_name == selected_ticket.material_name_snapshot) %}selected{% endif %}
                             >
                                 {{ m.material_name }}
@@ -134,13 +143,13 @@
                         </select>
                     </td>
                     <td>
-                        <input type="number" step="0.01" name="quantity" value="{{ '%.2f'|format(selected_ticket.quantity or 0) }}" required form="edit-form-{{ selected_ticket.id }}">
+                        <input type="number" step="0.01" name="quantity" class="edit-quantity" data-ticket-id="{{ selected_ticket.id }}" value="{{ '%.2f'|format(selected_ticket.quantity or 0) }}" required form="edit-form-{{ selected_ticket.id }}">
                     </td>
                     <td>
                         <input type="text" name="unit" value="{{ selected_ticket.unit }}" required form="edit-form-{{ selected_ticket.id }}">
                     </td>
                     <td>
-                        <input type="number" step="0.01" name="cost" value="{{ '%.2f'|format(selected_ticket.cost or 0) }}" required form="edit-form-{{ selected_ticket.id }}">
+                        <input type="number" step="0.01" id="cost-{{ selected_ticket.id }}" name="cost" value="{{ '%.2f'|format(selected_ticket.cost or 0) }}" readonly form="edit-form-{{ selected_ticket.id }}">
                     </td>
                     <td>
                         <input type="text" name="notes" value="{{ selected_ticket.notes or '' }}" form="edit-form-{{ selected_ticket.id }}">
@@ -203,10 +212,81 @@
         }
     }
 
+    function normalizeTruckSizeKey(rawTruckSize) {
+        const key = String(rawTruckSize || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        if (!key) return "";
+        if (key.includes("axle1")) return "axle1";
+        if (key.includes("tandem")) return "tandem";
+        if (key.includes("triaxle")) return "triaxle";
+        if (key.includes("axle45")) return "axle45";
+        if (key.includes("axle6")) return "axle6";
+        if (key.includes("semi")) return "semi";
+        if (key.includes("hydrovac") || key.includes("hydvac")) return "hydvac";
+        if (key.includes("dirtin")) return "dirtIn";
+        return "";
+    }
+
+    function syncCostForRow(ticketId) {
+        const formId = `edit-form-${ticketId}`;
+        const truckSelect = document.querySelector(`select[name="truck_id"][form="${formId}"]`);
+        const materialSelect = document.getElementById(`material-${ticketId}`);
+        const quantityInput = document.querySelector(`input[name="quantity"][form="${formId}"]`);
+        const costInput = document.getElementById(`cost-${ticketId}`);
+        if (!truckSelect || !materialSelect || !quantityInput || !costInput) return;
+
+        const selectedTruck = truckSelect.options[truckSelect.selectedIndex];
+        const selectedMaterial = materialSelect.options[materialSelect.selectedIndex];
+        const truckSizeKey = normalizeTruckSizeKey(selectedTruck ? selectedTruck.dataset.truckSize : "");
+
+        let quantity = parseFloat(quantityInput.value);
+        if (!Number.isFinite(quantity)) {
+            quantity = 0;
+        }
+
+        let pricePerLoad = 0;
+        if (selectedMaterial && selectedMaterial.value && !selectedMaterial.hidden && truckSizeKey) {
+            const rateMap = {
+                axle1: selectedMaterial.dataset.axle1,
+                tandem: selectedMaterial.dataset.tandem,
+                triaxle: selectedMaterial.dataset.triaxle,
+                axle45: selectedMaterial.dataset.axle45,
+                axle6: selectedMaterial.dataset.axle6,
+                semi: selectedMaterial.dataset.semi,
+                hydvac: selectedMaterial.dataset.hydvac,
+                dirtIn: selectedMaterial.dataset.dirtIn,
+            };
+            const parsedRate = parseFloat(rateMap[truckSizeKey] || "0");
+            pricePerLoad = Number.isFinite(parsedRate) ? parsedRate : 0;
+        }
+
+        const computedCost = Math.round(pricePerLoad * quantity * 100) / 100;
+        costInput.value = computedCost.toFixed(2);
+    }
+
     document.querySelectorAll(".edit-direction").forEach((el) => {
         const ticketId = el.dataset.ticketId;
         filterMaterialOptionsForRow(ticketId);
-        el.addEventListener("change", () => filterMaterialOptionsForRow(ticketId));
+        syncCostForRow(ticketId);
+
+        const formId = `edit-form-${ticketId}`;
+        const truckSelect = document.querySelector(`select[name="truck_id"][form="${formId}"]`);
+        const materialSelect = document.getElementById(`material-${ticketId}`);
+        const quantityInput = document.querySelector(`input[name="quantity"][form="${formId}"]`);
+
+        el.addEventListener("change", () => {
+            filterMaterialOptionsForRow(ticketId);
+            syncCostForRow(ticketId);
+        });
+        if (truckSelect) {
+            truckSelect.addEventListener("change", () => syncCostForRow(ticketId));
+        }
+        if (materialSelect) {
+            materialSelect.addEventListener("change", () => syncCostForRow(ticketId));
+        }
+        if (quantityInput) {
+            quantityInput.addEventListener("input", () => syncCostForRow(ticketId));
+            quantityInput.addEventListener("change", () => syncCostForRow(ticketId));
+        }
     });
 </script>
 {% endif %}
