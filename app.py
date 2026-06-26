@@ -1302,7 +1302,7 @@ def non_credit_card_daily_report_to_pdf_bytes(rows, report_start_date, report_en
     elements.append(Paragraph(f"Total customers: {len(external_grouped_rows) + len(internal_grouped_rows)}", normal))
     elements.append(Spacer(1, 10))
 
-    col_widths = [90, 95, 220, 80, 180, 65]
+    col_widths = [130, 95, 220, 30, 180, 65]
 
     def clip_to_width(value, width_points, font_name="Helvetica", font_size=9):
         text = str(value or "")
@@ -1504,7 +1504,7 @@ def customer_grouped_report_to_pdf_bytes(rows, filters):
     elements.append(Paragraph(f"Total customers: {len(external_grouped_rows) + len(internal_grouped_rows)}", normal))
     elements.append(Spacer(1, 10))
 
-    col_widths = [90, 95, 220, 80, 180, 65]
+    col_widths = [110, 95, 220, 50, 180, 65]
 
     def clip_to_width(value, width_points, font_name="Helvetica", font_size=9):
         text = str(value or "")
