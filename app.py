@@ -2233,7 +2233,7 @@ def list_ticket_jobs(db):
                 tax_exempt
             FROM manual_jobs
         ),
-        cache_limited AS (
+        cache_all AS (
             SELECT
                 ('cache:' || c.id::text) AS job_key,
                 c.job_code,
@@ -2247,8 +2247,6 @@ def list_ticket_jobs(db):
                 WHERE m.job_code = c.job_code
                   AND m.job_name = c.job_name
             )
-            ORDER BY c.job_code, c.job_name
-            LIMIT GREATEST(%s - (SELECT COUNT(*) FROM manual), 0)
         )
         SELECT job_key, job_code, job_name, customer, tax_exempt
         FROM manual
@@ -2256,11 +2254,62 @@ def list_ticket_jobs(db):
         UNION ALL
 
         SELECT job_key, job_code, job_name, customer, tax_exempt
-        FROM cache_limited
+        FROM cache_all
 
         ORDER BY job_code, job_name
-        """,
-        (MAX_JOB_OPTIONS,),
+        """
+        )
+        return cursor.fetchall()
+
+
+def search_ticket_jobs(db, query_text=""):
+    search_term = str(query_text or "").strip()
+    like_pattern = f"%{search_term}%"
+
+    with db.cursor() as cursor:
+        cursor.execute(
+            """
+            WITH manual AS (
+                SELECT
+                    ('manual:' || id::text) AS job_key,
+                    COALESCE(job_code, '') AS job_code,
+                    COALESCE(job_name, '') AS job_name,
+                    COALESCE(customer, '') AS customer,
+                    COALESCE(tax_exempt, '') AS tax_exempt
+                FROM manual_jobs
+            ),
+            cache_all AS (
+                SELECT
+                    ('cache:' || c.id::text) AS job_key,
+                    COALESCE(c.job_code, '') AS job_code,
+                    COALESCE(c.job_name, '') AS job_name,
+                    COALESCE(c.customer, '') AS customer,
+                    COALESCE(c.tax_exempt, '') AS tax_exempt
+                FROM jobs_cache c
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM manual m
+                    WHERE m.job_code = c.job_code
+                      AND m.job_name = c.job_name
+                )
+            ),
+            merged AS (
+                SELECT * FROM manual
+                UNION ALL
+                SELECT * FROM cache_all
+            )
+            SELECT job_key, job_code, job_name, customer, tax_exempt
+            FROM merged
+            WHERE (
+                %s = ''
+                OR job_code ILIKE %s
+                OR job_name ILIKE %s
+                OR customer ILIKE %s
+                OR (job_code || ' - ' || job_name) ILIKE %s
+            )
+            ORDER BY job_code, job_name
+            """,
+            (search_term, like_pattern, like_pattern, like_pattern, like_pattern),
         )
         return cursor.fetchall()
 
@@ -3620,6 +3669,23 @@ def refresh_jobs():
         db.rollback()
         flash(f"Jobs refresh failed: {exc}", "error")
     return redirect(url_for("new_ticket"))
+
+
+@app.get("/jobs/search")
+def jobs_search():
+    db = get_db()
+    query_text = request.args.get("q", "")
+    jobs = search_ticket_jobs(db, query_text)
+    payload = [
+        {
+            "job_key": str(job.get("job_key") or "").strip(),
+            "job_code": str(job.get("job_code") or "").strip(),
+            "job_name": str(job.get("job_name") or "").strip(),
+            "customer": str(job.get("customer") or "").strip(),
+        }
+        for job in jobs
+    ]
+    return {"jobs": payload}
 
 
 @app.route("/tickets/search", methods=["GET"])

@@ -170,9 +170,79 @@
         input.addEventListener("change", syncHidden);
     }
 
-    bindSearchSelect("job_search", "job_id", "jobs_list", "job");
     bindSearchSelect("customer_search", "customer_id", "customers_list", "customer");
     bindSearchSelect("truck_search", "truck_id", "trucks_list", "truck");
+
+    function initDynamicJobLookup() {
+        const input = document.getElementById("job_search");
+        const hidden = document.getElementById("job_id");
+        const datalist = document.getElementById("jobs_list");
+        if (!input || !hidden || !datalist) return;
+
+        let jobsLoaded = false;
+
+        function syncHiddenFromList() {
+            const wanted = (input.value || "").trim();
+            if (!wanted) {
+                hidden.value = "";
+                return;
+            }
+
+            for (const option of datalist.options) {
+                if ((option.value || "").trim() === wanted) {
+                    hidden.value = (option.dataset.id || "").trim();
+                    return;
+                }
+            }
+            hidden.value = "";
+        }
+
+        function renderJobs(jobs) {
+            datalist.innerHTML = "";
+            for (const job of jobs) {
+                const option = document.createElement("option");
+                option.value = `${job.job_code} - ${job.job_name}`;
+                option.dataset.id = job.job_key || "";
+                datalist.appendChild(option);
+            }
+            syncHiddenFromList();
+        }
+
+        async function fetchAndRenderAllJobs() {
+            if (jobsLoaded) {
+                return;
+            }
+
+            const response = await fetch("/jobs/search");
+            if (!response.ok) {
+                return;
+            }
+
+            const data = await response.json();
+            const jobs = Array.isArray(data.jobs) ? data.jobs : [];
+            renderJobs(jobs);
+            jobsLoaded = true;
+        }
+
+        input.addEventListener("input", () => {
+            syncHiddenFromList();
+            if (!jobsLoaded) {
+                fetchAndRenderAllJobs().catch(() => {
+                    // Keep manual entry available even if live lookup fails.
+                });
+            }
+        });
+
+        input.addEventListener("focus", () => {
+            fetchAndRenderAllJobs().catch(() => {
+                // Keep manual entry available even if live lookup fails.
+            });
+        });
+
+        input.addEventListener("change", syncHiddenFromList);
+    }
+
+    initDynamicJobLookup();
 
 
     const useNowCheckbox = document.getElementById("use_now");

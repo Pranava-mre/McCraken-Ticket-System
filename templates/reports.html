@@ -244,6 +244,35 @@
         jobIdInput.value = selectedOption ? (selectedOption.dataset.id || "") : "";
     };
 
+    let jobsLoaded = false;
+
+    const renderJobOptions = (jobs) => {
+        jobsList.innerHTML = "";
+        jobs.forEach((job) => {
+            const option = document.createElement("option");
+            option.value = `${job.job_code} - ${job.job_name}`;
+            option.dataset.id = job.job_key || "";
+            jobsList.appendChild(option);
+        });
+        syncSelectedJob();
+    };
+
+    const fetchAllJobs = async () => {
+        if (jobsLoaded) {
+            return;
+        }
+
+        const response = await fetch("/jobs/search");
+        if (!response.ok) {
+            return;
+        }
+
+        const data = await response.json();
+        const jobs = Array.isArray(data.jobs) ? data.jobs : [];
+        renderJobOptions(jobs);
+        jobsLoaded = true;
+    };
+
     const syncSelectedCustomer = () => {
         const selectedOption = Array.from(customersList.options).find((option) => option.value === customerInput.value);
         customerIdInput.value = selectedOption ? (selectedOption.dataset.id || "") : "";
@@ -254,8 +283,20 @@
         materialIdInput.value = selectedOption ? (selectedOption.dataset.id || "") : "";
     };
 
-    jobInput.addEventListener("input", syncSelectedJob);
+    jobInput.addEventListener("input", () => {
+        syncSelectedJob();
+        if (!jobsLoaded) {
+            fetchAllJobs().catch(() => {
+                // Keep manual entry available if lookup fails.
+            });
+        }
+    });
     jobInput.addEventListener("change", syncSelectedJob);
+    jobInput.addEventListener("focus", () => {
+        fetchAllJobs().catch(() => {
+            // Keep manual entry available if lookup fails.
+        });
+    });
     customerInput.addEventListener("input", syncSelectedCustomer);
     customerInput.addEventListener("change", syncSelectedCustomer);
     materialInput.addEventListener("input", syncSelectedMaterial);
