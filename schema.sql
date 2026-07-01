@@ -138,6 +138,10 @@ CREATE TABLE IF NOT EXISTS tickets (
     notes TEXT,
     active BOOLEAN NOT NULL DEFAULT TRUE,
     modified_to_id BIGINT,
+    image_url TEXT NOT NULL DEFAULT '',
+    image_status TEXT NOT NULL DEFAULT '',
+    image_error TEXT NOT NULL DEFAULT '',
+    image_generated_at TEXT,
     pdf_path TEXT,
     pdf_blob BYTEA,
     FOREIGN KEY(job_id) REFERENCES jobs_cache(id),
@@ -150,6 +154,7 @@ CREATE INDEX IF NOT EXISTS idx_tickets_created_at ON tickets(created_at);
 CREATE INDEX IF NOT EXISTS idx_tickets_ticket_number ON tickets(ticket_number);
 CREATE INDEX IF NOT EXISTS idx_tickets_job_code ON tickets(job_code_snapshot);
 CREATE INDEX IF NOT EXISTS idx_tickets_truck_number ON tickets(truck_number_snapshot);
+CREATE INDEX IF NOT EXISTS idx_tickets_image_status ON tickets(image_status);
 CREATE INDEX IF NOT EXISTS idx_rfid_epc_map_epc ON rfid_epc_truck_map(LOWER(TRIM(epc)));
 CREATE INDEX IF NOT EXISTS idx_rfid_epc_map_truck ON rfid_epc_truck_map(LOWER(TRIM(truck_number)));
 CREATE INDEX IF NOT EXISTS idx_rfid_tag_catalog_epc ON rfid_tag_catalog(LOWER(TRIM(epc)));

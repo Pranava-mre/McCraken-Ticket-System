@@ -17,6 +17,7 @@ import base64
 import re
 import psycopg2
 import pyodbc
+import requests
 from dotenv import load_dotenv
 from flask import (
     Flask,
@@ -97,10 +98,12 @@ AZURE_STORAGE_CONTAINER = os.getenv("AZURE_STORAGE_CONTAINER", "ticket-pdfs").st
 AZURE_TICKETS_BLOB_PREFIX = os.getenv("AZURE_TICKETS_BLOB_PREFIX", "tickets").strip().strip("/")
 AZURE_REPORTS_BLOB_PREFIX = os.getenv("AZURE_REPORTS_BLOB_PREFIX", "reports").strip().strip("/")
 AZURE_DOWNLOADS_BLOB_PREFIX = os.getenv("AZURE_DOWNLOADS_BLOB_PREFIX", "downloads").strip().strip("/")
+AZURE_TICKET_IMAGES_BLOB_PREFIX = os.getenv("AZURE_TICKET_IMAGES_BLOB_PREFIX", "ticket-images").strip().strip("/")
 AZURE_JOBS_CACHE_BLOB_NAME = os.getenv("AZURE_JOBS_CACHE_BLOB_NAME", "jobs_cache/jobs_cache.csv").strip().strip("/")
 CREDIT_CARD_CUSTOMER_MATCH = os.getenv("CREDIT_CARD_CUSTOMER_MATCH", "credit card").strip() or "credit card"
 CREDIT_CARD_REPORT_API_KEY = os.getenv("CREDIT_CARD_REPORT_API_KEY", "").strip()
 CREDIT_CARD_REPORT_SAS_MINUTES = int(os.getenv("CREDIT_CARD_REPORT_SAS_MINUTES", "180").strip() or "180")
+AZURE_IMAGE_SAS_MINUTES = int(os.getenv("AZURE_IMAGE_SAS_MINUTES", "180").strip() or "180")
 RFID_EVENT_API_KEY = os.getenv("RFID_EVENT_API_KEY", "").strip()
 RFID_WEBHOOK_USERNAME = os.getenv("RFID_WEBHOOK_USERNAME", "").strip()
 RFID_WEBHOOK_PASSWORD = os.getenv("RFID_WEBHOOK_PASSWORD", "").strip()
@@ -125,6 +128,425 @@ def env_flag(name, default=False):
 AUTO_DB_BOOTSTRAP = env_flag("AUTO_DB_BOOTSTRAP", True)
 PG_CONNECT_TIMEOUT = int(os.getenv("PG_CONNECT_TIMEOUT", "8").strip() or "8")
 MAX_JOB_OPTIONS = int(os.getenv("MAX_JOB_OPTIONS", "2000").strip() or "2000")
+
+WAVE_IMAGE_CAPTURE_ENABLED = env_flag("WAVE_IMAGE_CAPTURE_ENABLED", True)
+WAVE_CLOUD_BASE_URL = os.getenv("WAVE_CLOUD_BASE_URL", "https://sync.wavevms.com").strip().rstrip("/")
+WAVE_SYSTEM_ID = os.getenv("WAVE_SYSTEM_ID", "").strip()
+WAVE_USERNAME = os.getenv("WAVE_USERNAME", "").strip()
+WAVE_PASSWORD = os.getenv("WAVE_PASSWORD", "").strip()
+WAVE_CAMERA_ID = os.getenv("WAVE_CAMERA_ID", "").strip()
+WAVE_SERVER_GUID = os.getenv("WAVE_SERVER_GUID", "").strip()
+WAVE_IMAGE_RESOLUTION = os.getenv("WAVE_IMAGE_RESOLUTION", "1024x452").strip() or "1024x452"
+WAVE_FOOTAGE_DURATION_SECONDS = max(1, int(os.getenv("WAVE_FOOTAGE_DURATION_SECONDS", "8").strip() or "8"))
+
+_wave_session_lock = threading.Lock()
+_wave_session_cache = {
+    "access_token": "",
+    "relay_root": "",
+    "expires_at_unix": 0,
+}
+
+
+def _wave_is_configured():
+    required = [WAVE_CLOUD_BASE_URL, WAVE_SYSTEM_ID, WAVE_USERNAME, WAVE_PASSWORD, WAVE_CAMERA_ID]
+    return all(bool(v) for v in required)
+
+
+def _wave_ticket_time_to_ms(ticket_time_text):
+    text = str(ticket_time_text or "").strip()
+    if not text:
+        raise ValueError("Empty ticket timestamp.")
+
+    if re.fullmatch(r"[0-9]{13}", text):
+        return int(text)
+    if re.fullmatch(r"[0-9]{10}(?:\.[0-9]+)?", text):
+        return int(float(text) * 1000)
+
+    dt = datetime.fromisoformat(text)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=APP_TZ)
+    return int(dt.timestamp() * 1000)
+
+
+def _wave_fetch_access_token():
+    response = requests.post(
+        f"{WAVE_CLOUD_BASE_URL}/cdb/oauth2/token",
+        json={
+            "grant_type": "password",
+            "response_type": "token",
+            "client_id": "3rdParty",
+            "scope": f"cloudSystemId={WAVE_SYSTEM_ID}",
+            "username": WAVE_USERNAME,
+            "password": WAVE_PASSWORD,
+        },
+        timeout=30,
+    )
+    if response.status_code != 200:
+        raise RuntimeError(f"WAVE auth failed ({response.status_code}): {response.text[:300]}")
+
+    payload = response.json() if response.content else {}
+    token = str(payload.get("access_token") or "").strip()
+    if not token:
+        raise RuntimeError("WAVE auth response missing access_token.")
+    if not token.startswith("nxcdb-"):
+        token = "nxcdb-" + token
+
+    expires_in = int(payload.get("expires_in") or 3600)
+    expires_at_unix = int(time.time()) + max(60, expires_in - 60)
+    return token, expires_at_unix
+
+
+def _wave_fetch_relay_root(access_token):
+    base_url = f"https://{WAVE_SYSTEM_ID}.relay.vmsproxy.com"
+    response = requests.get(
+        f"{base_url}/rest/v4/login/sessions/{access_token}",
+        timeout=30,
+        allow_redirects=True,
+    )
+    if response.status_code != 200:
+        raise RuntimeError(f"WAVE relay lookup failed ({response.status_code}).")
+
+    marker = "/rest/v4/login/sessions/"
+    url = str(response.url or "")
+    idx = url.find(marker)
+    if idx < 0:
+        raise RuntimeError("WAVE relay URL format unexpected.")
+    return url[:idx]
+
+
+def _wave_get_or_refresh_session(force_refresh=False):
+    with _wave_session_lock:
+        now_unix = int(time.time())
+        has_valid_cached = (
+            bool(_wave_session_cache.get("access_token"))
+            and bool(_wave_session_cache.get("relay_root"))
+            and int(_wave_session_cache.get("expires_at_unix") or 0) > now_unix
+        )
+        if has_valid_cached and not force_refresh:
+            return _wave_session_cache["access_token"], _wave_session_cache["relay_root"]
+
+        access_token, expires_at_unix = _wave_fetch_access_token()
+        relay_root = _wave_fetch_relay_root(access_token)
+        _wave_session_cache.update(
+            {
+                "access_token": access_token,
+                "relay_root": relay_root,
+                "expires_at_unix": expires_at_unix,
+            }
+        )
+        return access_token, relay_root
+
+
+def _wave_extract_first_jpeg(stream_response):
+    buffer = b""
+    for chunk in stream_response.iter_content(chunk_size=4096):
+        if not chunk:
+            continue
+        buffer += chunk
+        start = buffer.find(b"\xff\xd8")
+        end = buffer.find(b"\xff\xd9")
+        if start != -1 and end != -1 and end > start:
+            return buffer[start:end + 2]
+    return None
+
+
+def _wave_capture_ticket_image_bytes(created_at_text):
+    if not _wave_is_configured():
+        return None, "WAVE_NOT_CONFIGURED", "WAVE settings are missing on server."
+
+    try:
+        position_ms = _wave_ticket_time_to_ms(created_at_text)
+    except Exception as exc:
+        return None, "INVALID_TIMESTAMP", f"Invalid ticket timestamp: {exc}"
+
+    for attempt in range(2):
+        force_refresh = attempt > 0
+        try:
+            access_token, relay_root = _wave_get_or_refresh_session(force_refresh=force_refresh)
+        except Exception as exc:
+            return None, "WAVE_AUTH_FAILED", str(exc)
+
+        headers = {"Authorization": f"Bearer {access_token}"}
+        playback_response = requests.post(
+            f"{relay_root}/rest/v3/login/tickets",
+            headers=headers,
+            json={},
+            timeout=30,
+        )
+        if playback_response.status_code == 401 and attempt == 0:
+            continue
+        if playback_response.status_code != 200:
+            return None, "PLAYBACK_TICKET_FAILED", f"Playback ticket failed ({playback_response.status_code})."
+
+        playback_token = str((playback_response.json() or {}).get("token") or "").strip()
+        if not playback_token:
+            return None, "PLAYBACK_TICKET_FAILED", "Playback ticket token missing."
+
+        footage_response = requests.get(
+            f"{relay_root}/rest/v4/devices/{WAVE_CAMERA_ID}/footage",
+            headers=headers,
+            params={
+                "startTimeMs": position_ms,
+                "endTimeMs": position_ms + (WAVE_FOOTAGE_DURATION_SECONDS * 1000),
+                "periodType": "recording",
+                "preciseBounds": "true",
+                "_ticket": playback_token,
+            },
+            timeout=30,
+        )
+        if footage_response.status_code == 401 and attempt == 0:
+            continue
+        if footage_response.status_code != 200:
+            return None, "FOOTAGE_CHECK_FAILED", f"Footage check failed ({footage_response.status_code})."
+
+        footage_json = footage_response.json() if footage_response.content else []
+        if not footage_json:
+            return None, "NO_FOOTAGE", "No recorded footage at this ticket time."
+
+        # Playback tickets can be single-use in some WAVE setups.
+        # Create a new ticket for the media fetch after footage probing.
+        media_ticket_response = requests.post(
+            f"{relay_root}/rest/v3/login/tickets",
+            headers=headers,
+            json={},
+            timeout=30,
+        )
+        if media_ticket_response.status_code == 401 and attempt == 0:
+            continue
+        if media_ticket_response.status_code != 200:
+            return None, "PLAYBACK_TICKET_FAILED", f"Media playback ticket failed ({media_ticket_response.status_code})."
+
+        media_playback_token = str((media_ticket_response.json() or {}).get("token") or "").strip()
+        if not media_playback_token:
+            return None, "PLAYBACK_TICKET_FAILED", "Media playback ticket token missing."
+
+        media_params = {
+            "positionMs": position_ms,
+            "stream": "primary",
+            "resolution": WAVE_IMAGE_RESOLUTION,
+            "accurateSeek": "true",
+            "_ticket": media_playback_token,
+        }
+        if WAVE_SERVER_GUID:
+            media_params["Server-Guid"] = WAVE_SERVER_GUID
+
+        media_response = requests.get(
+            f"{relay_root}/rest/v3/devices/{WAVE_CAMERA_ID}/media.mpjpeg",
+            headers=headers,
+            params=media_params,
+            stream=True,
+            timeout=120,
+        )
+        if media_response.status_code == 401 and attempt == 0:
+            continue
+        if media_response.status_code != 200:
+            body_preview = ""
+            try:
+                body_preview = (media_response.text or "")[:200]
+            except Exception:
+                body_preview = ""
+            msg = f"Image capture failed ({media_response.status_code})."
+            if body_preview:
+                msg = f"{msg} {body_preview}"
+            return None, "IMAGE_CAPTURE_FAILED", msg
+
+        jpeg_bytes = _wave_extract_first_jpeg(media_response)
+        media_response.close()
+        if not jpeg_bytes:
+            return None, "IMAGE_CAPTURE_FAILED", "No JPEG frame found in stream."
+        return jpeg_bytes, "", ""
+
+    return None, "WAVE_AUTH_FAILED", "WAVE session refresh did not resolve authentication." 
+
+
+def _wave_capture_live_image_bytes():
+    if not _wave_is_configured():
+        return None, "WAVE_NOT_CONFIGURED", "WAVE settings are missing on server."
+
+    for attempt in range(2):
+        force_refresh = attempt > 0
+        try:
+            access_token, relay_root = _wave_get_or_refresh_session(force_refresh=force_refresh)
+        except Exception as exc:
+            return None, "WAVE_AUTH_FAILED", str(exc)
+
+        headers = {"Authorization": f"Bearer {access_token}"}
+        playback_response = requests.post(
+            f"{relay_root}/rest/v3/login/tickets",
+            headers=headers,
+            json={},
+            timeout=30,
+        )
+        if playback_response.status_code == 401 and attempt == 0:
+            continue
+        if playback_response.status_code != 200:
+            return None, "PLAYBACK_TICKET_FAILED", f"Playback ticket failed ({playback_response.status_code})."
+
+        playback_token = str((playback_response.json() or {}).get("token") or "").strip()
+        if not playback_token:
+            return None, "PLAYBACK_TICKET_FAILED", "Playback ticket token missing."
+
+        media_params = {
+            "stream": "primary",
+            "resolution": WAVE_IMAGE_RESOLUTION,
+            "_ticket": playback_token,
+        }
+        if WAVE_SERVER_GUID:
+            media_params["Server-Guid"] = WAVE_SERVER_GUID
+
+        media_response = requests.get(
+            f"{relay_root}/rest/v4/devices/{WAVE_CAMERA_ID}/media.mpjpeg",
+            headers=headers,
+            params=media_params,
+            stream=True,
+            timeout=120,
+        )
+        if media_response.status_code == 401 and attempt == 0:
+            continue
+        if media_response.status_code != 200:
+            body_preview = ""
+            try:
+                body_preview = (media_response.text or "")[:200]
+            except Exception:
+                body_preview = ""
+            msg = f"Live snapshot failed ({media_response.status_code})."
+            if body_preview:
+                msg = f"{msg} {body_preview}"
+            return None, "IMAGE_CAPTURE_FAILED", msg
+
+        jpeg_bytes = _wave_extract_first_jpeg(media_response)
+        media_response.close()
+        if not jpeg_bytes:
+            return None, "IMAGE_CAPTURE_FAILED", "No JPEG frame found in live stream."
+        return jpeg_bytes, "", ""
+
+    return None, "WAVE_AUTH_FAILED", "WAVE session refresh did not resolve authentication."
+
+
+def upload_ticket_image_to_blob(blob_name, image_bytes):
+    blob_service = get_blob_service_client()
+    if blob_service is None:
+        return None
+
+    container_client = blob_service.get_container_client(AZURE_STORAGE_CONTAINER)
+    try:
+        container_client.create_container()
+    except Exception:
+        pass
+
+    blob_client = container_client.get_blob_client(blob_name)
+    content_settings = ContentSettings(content_type="image/jpeg") if ContentSettings else None
+    blob_client.upload_blob(image_bytes, overwrite=True, content_settings=content_settings)
+    return blob_client.url
+
+
+def _safe_blob_segment(value, default="unknown"):
+    raw = str(value or "").strip()
+    if not raw:
+        raw = default
+    safe = re.sub(r"[^a-zA-Z0-9._\-]", "_", raw)
+    return safe[:120] or default
+
+
+def _build_ticket_image_blob_name(ticket_number, created_at_text, material_name):
+    year = app_now().year
+    material_segment = _safe_blob_segment(material_name, default="material")
+    ticket_segment = _safe_blob_segment(ticket_number, default="ticket")
+    stamp = _safe_blob_segment(str(created_at_text or ""), default=app_now().strftime("%Y%m%dT%H%M%S"))
+    file_name = f"{ticket_segment}_{stamp}.jpg"
+    prefix = AZURE_TICKET_IMAGES_BLOB_PREFIX
+    return f"{prefix}/{year}/{material_segment}/{file_name}" if prefix else f"{year}/{material_segment}/{file_name}"
+
+
+def _set_ticket_image_state(db, ticket_id, image_status, image_url="", image_error=""):
+    generated_at = app_now().isoformat(timespec="seconds") if image_status == "READY" else None
+    with db.cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE tickets
+            SET image_status = %s,
+                image_url = %s,
+                image_error = %s,
+                image_generated_at = %s
+            WHERE id = %s
+            """,
+            (image_status, image_url, image_error, generated_at, ticket_id),
+        )
+
+
+def generate_ticket_image_for_row(db, ticket_row, force=False, capture_mode="historical"):
+    ticket_id = int(ticket_row.get("id") or 0)
+    if ticket_id <= 0:
+        return {"ok": False, "code": "INVALID_TICKET", "message": "Ticket id is missing."}
+
+    existing_url = str(ticket_row.get("image_url") or "").strip()
+    if existing_url and not force:
+        return {
+            "ok": True,
+            "already_exists": True,
+            "image_url": existing_url,
+            "code": "READY",
+            "message": "Image already exists.",
+        }
+
+    if not WAVE_IMAGE_CAPTURE_ENABLED:
+        _set_ticket_image_state(db, ticket_id, image_status="DISABLED", image_url=existing_url, image_error="Image capture is disabled.")
+        return {"ok": False, "code": "DISABLED", "message": "Image capture is disabled."}
+
+    mode = str(capture_mode or "historical").strip().lower()
+    if mode == "live":
+        image_bytes, error_code, error_message = _wave_capture_live_image_bytes()
+    else:
+        image_bytes, error_code, error_message = _wave_capture_ticket_image_bytes(ticket_row.get("created_at"))
+    if not image_bytes:
+        status = "NO_FOOTAGE" if error_code == "NO_FOOTAGE" else "ERROR"
+        _set_ticket_image_state(db, ticket_id, image_status=status, image_url="", image_error=error_message)
+        return {"ok": False, "code": error_code or "ERROR", "message": error_message or "Could not generate image."}
+
+    blob_name = _build_ticket_image_blob_name(
+        ticket_number=ticket_row.get("ticket_number"),
+        created_at_text=ticket_row.get("created_at"),
+        material_name=ticket_row.get("material_name_snapshot"),
+    )
+    try:
+        blob_url = upload_ticket_image_to_blob(blob_name, image_bytes)
+    except Exception as exc:
+        _set_ticket_image_state(db, ticket_id, image_status="ERROR", image_url="", image_error=f"Blob upload failed: {exc}")
+        return {"ok": False, "code": "UPLOAD_FAILED", "message": f"Blob upload failed: {exc}"}
+
+    if not blob_url:
+        _set_ticket_image_state(db, ticket_id, image_status="ERROR", image_url="", image_error="Blob upload failed.")
+        return {"ok": False, "code": "UPLOAD_FAILED", "message": "Blob upload failed."}
+
+    _set_ticket_image_state(db, ticket_id, image_status="READY", image_url=blob_url, image_error="")
+    return {
+        "ok": True,
+        "already_exists": False,
+        "image_url": blob_url,
+        "code": "READY",
+        "message": "Image generated.",
+    }
+
+
+def get_ticket_image_source_row(db, ticket_id):
+    with db.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT
+                id,
+                ticket_number,
+                created_at,
+                material_name_snapshot,
+                image_url,
+                image_status,
+                image_error
+            FROM tickets
+            WHERE id = %s
+            LIMIT 1
+            """,
+            (ticket_id,),
+        )
+        return cursor.fetchone()
 
 
 def get_blob_service_client():
@@ -219,6 +641,36 @@ def generate_blob_read_sas_url(blob_name, expiry_minutes):
     base_blob_url = f"https://{account_name}.blob.core.windows.net/{AZURE_STORAGE_CONTAINER}/{blob_name}"
     sas_url = f"{base_blob_url}?{sas_token}"
     return sas_url, expires_at_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def extract_blob_name_from_url(blob_url):
+    if not blob_url:
+        return ""
+
+    parsed = urlparse(str(blob_url))
+    marker = f"/{AZURE_STORAGE_CONTAINER}/"
+    idx = parsed.path.find(marker)
+    if idx < 0:
+        return ""
+
+    return unquote(parsed.path[idx + len(marker):]).lstrip("/")
+
+
+def build_ticket_image_view_url(image_url):
+    raw_url = str(image_url or "").strip()
+    if not raw_url:
+        return ""
+
+    blob_name = extract_blob_name_from_url(raw_url)
+    if not blob_name:
+        return raw_url
+
+    try:
+        sas_url, _expires = generate_blob_read_sas_url(blob_name, AZURE_IMAGE_SAS_MINUTES)
+        return sas_url
+    except Exception as exc:
+        app.logger.warning("Could not generate image SAS for '%s': %s", blob_name, exc)
+        return raw_url
 
 
 def upload_download_audit_blob(category, filename, file_bytes, mimetype):
@@ -551,10 +1003,19 @@ def close_db(_exception):
 def init_db():
     PDF_DIR.mkdir(parents=True, exist_ok=True)
     with closing(create_db_connection()) as conn:
-        with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
-            schema_sql = f.read()
         with conn.cursor() as cursor:
-            cursor.execute(schema_sql)
+            cursor.execute("SELECT to_regclass('public.tickets') AS tickets_table")
+            existing = cursor.fetchone() or {}
+            has_existing_core_tables = bool(existing.get("tickets_table"))
+
+        # For existing PostgreSQL deployments, skip schema.sql and apply migrations only.
+        # This prevents CREATE INDEX errors when schema.sql references newer columns.
+        if not has_existing_core_tables:
+            with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
+                schema_sql = f.read()
+            with conn.cursor() as cursor:
+                cursor.execute(schema_sql)
+
         ensure_db_migrations(conn)
         conn.commit()
 
@@ -584,9 +1045,14 @@ def ensure_db_migrations(conn):
         cursor.execute("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS cost REAL NOT NULL DEFAULT 0")
         cursor.execute("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE")
         cursor.execute("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS modified_to_id BIGINT")
+        cursor.execute("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS image_url TEXT NOT NULL DEFAULT ''")
+        cursor.execute("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS image_status TEXT NOT NULL DEFAULT ''")
+        cursor.execute("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS image_error TEXT NOT NULL DEFAULT ''")
+        cursor.execute("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS image_generated_at TEXT")
         cursor.execute("ALTER TABLE tickets ALTER COLUMN pdf_path DROP NOT NULL")
         cursor.execute("ALTER TABLE tickets ALTER COLUMN pdf_blob DROP NOT NULL")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_tickets_active ON tickets(active)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tickets_image_status ON tickets(image_status)")
         cursor.execute("ALTER TABLE trucks ADD COLUMN IF NOT EXISTS truck_size TEXT NOT NULL DEFAULT ''")
         cursor.execute("ALTER TABLE trucks ADD COLUMN IF NOT EXISTS hauled_by TEXT NOT NULL DEFAULT ''")
         cursor.execute(
@@ -3519,6 +3985,29 @@ def new_ticket():
             db.rollback()
             raise
 
+        image_result = None
+        if created_ticket_id is not None:
+            try:
+                source_row = get_ticket_image_source_row(db, created_ticket_id)
+                if source_row:
+                    image_result = generate_ticket_image_for_row(db, source_row, force=False, capture_mode="live")
+                    db.commit()
+            except Exception as exc:
+                db.rollback()
+                app.logger.warning("Ticket %s image generation failed: %s", ticket_number, exc)
+                image_result = {
+                    "ok": False,
+                    "code": "ERROR",
+                    "message": str(exc),
+                }
+
+        if image_result and not image_result.get("ok"):
+            msg = str(image_result.get("message") or "Could not generate ticket image.")
+            if image_result.get("code") == "NO_FOOTAGE":
+                flash("Ticket saved. No camera footage was available at ticket time.", "error")
+            else:
+                flash(f"Ticket saved. Image generation failed: {msg}", "error")
+
         if auto_print:
             if created_ticket_id is not None:
                 # Use an intermediate print page: kiosk mode can print silently;
@@ -3711,6 +4200,9 @@ def search_tickets():
             truck_number_snapshot,
             material_name_snapshot,
             cost,
+            image_url,
+            image_status,
+            image_error,
             CASE
                 WHEN pdf_blob IS NOT NULL OR COALESCE(pdf_path, '') <> '' THEN TRUE
                 ELSE FALSE
@@ -3745,6 +4237,10 @@ def search_tickets():
     with db.cursor() as cursor:
         cursor.execute(query, tuple(params))
         tickets = cursor.fetchall()
+
+    for ticket in tickets:
+        ticket["image_view_url"] = build_ticket_image_view_url(ticket.get("image_url"))
+
     return render_template(
         "ticket_search.html",
         tickets=tickets,
@@ -5184,6 +5680,58 @@ def generate_ticket_pdf(ticket_id):
         flash(f"Could not generate PDF: {exc}", "error")
 
     return redirect(url_for("search_tickets", ticket_number=row["ticket_number"]))
+
+
+@app.post("/tickets/<int:ticket_id>/generate-image")
+@app.post("/api/tickets/<int:ticket_id>/generate-image")
+def generate_ticket_image(ticket_id):
+    db = get_db()
+    row = get_ticket_image_source_row(db, ticket_id)
+    if not row:
+        if request.path.startswith("/api/"):
+            return {"ok": False, "error": "Ticket not found."}, 404
+        flash("Ticket not found.", "error")
+        return redirect(request.referrer or url_for("search_tickets"))
+
+    try:
+        result = generate_ticket_image_for_row(db, row, force=False, capture_mode="historical")
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        result = {"ok": False, "code": "ERROR", "message": str(exc)}
+
+    if request.path.startswith("/api/"):
+        status_code = 200 if result.get("ok") else 500
+        if result.get("code") == "NO_FOOTAGE":
+            status_code = 404
+        if result.get("code") in {"WAVE_NOT_CONFIGURED", "DISABLED"}:
+            status_code = 503
+        payload = {
+            "ok": bool(result.get("ok")),
+            "ticket_id": ticket_id,
+            "ticket_number": row.get("ticket_number"),
+            "image_url": build_ticket_image_view_url(
+                result.get("image_url") or str(row.get("image_url") or "").strip() or None
+            ) or None,
+            "code": result.get("code") or ("READY" if result.get("ok") else "ERROR"),
+            "message": result.get("message") or "",
+            "already_exists": bool(result.get("already_exists")),
+        }
+        return payload, status_code
+
+    if result.get("ok"):
+        if result.get("already_exists"):
+            flash(f"Image already exists for {row['ticket_number']}.", "success")
+        else:
+            flash(f"Image generated for {row['ticket_number']}.", "success")
+    else:
+        message = str(result.get("message") or "Could not generate image.")
+        if result.get("code") == "NO_FOOTAGE":
+            flash(f"No footage for {row['ticket_number']} at that timestamp.", "error")
+        else:
+            flash(f"Image generation failed for {row['ticket_number']}: {message}", "error")
+
+    return redirect(request.referrer or url_for("search_tickets", ticket_number=row["ticket_number"]))
 
 
 @app.get("/rfid")

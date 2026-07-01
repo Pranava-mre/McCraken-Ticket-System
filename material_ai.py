@@ -1,494 +1,365 @@
-
-
-
-# import time
-# from datetime import datetime
-# import requests
-
-
-# # ==========================
-# # CHANGE THESE VALUES
-# # ==========================
-
-# CLOUD_BASE_URL = "https://sync.wavevms.com"
-# SYSTEM_ID = "edbde632-d846-49f5-8fc8-7fdaaa2504e7"
-# BASE_URL = f"https://{SYSTEM_ID}.relay-us-chi-2-prod-dp.vmsproxy.com"
-# CAMERA_ID = "4f68efaf-da80-b7f7-94af-f895e6c42e5e"
-
-# TICKET_TIME = "2026-06-26T02:48:00"
-# DURATION_SECONDS = 8
-# OUTPUT_FILE = "truck_video.webm"
-# RESOLUTION = "1024x452"
-
-
-# r = requests.post(
-#     f"{CLOUD_BASE_URL}/cdb/oauth2/token",
-#     json={
-#         "grant_type": "password",
-#         "response_type": "token",
-#         "client_id": "3rdParty",
-#         "scope": f"cloudSystemId={SYSTEM_ID}",
-#         "username": USERNAME,
-#         "password": PASSWORD,
-#     },
-#     timeout=30,
-# )
-# BEARER_TOKEN = r.json()["access_token"]
-
-
-
-
-
-# # ==========================
-# # HELPERS
-# # ==========================
-
-# def ticket_time_to_ms(ticket_time: str) -> int:
-#     dt = datetime.strptime(ticket_time, "%Y-%m-%dT%H:%M:%S")
-#     return int(dt.timestamp() * 1000)
-
-
-# headers = {
-#     "Authorization": f"Bearer {BEARER_TOKEN}",
-#     "Accept": "application/json, text/plain, */*",
-#     "Content-Type": "application/json",
-# }
-
-
-# # ==========================
-# # STEP 1 : CHECK CONNECTION
-# # ==========================
-
-# print("Checking WAVE connection...")
-
-# r = requests.get(
-#     f"{BASE_URL}/rest/v2/servers",
-#     headers=headers,
-#     timeout=30
-# )
-
-# if r.status_code != 200:
-#     print("Cannot connect to WAVE.")
-#     print("Status:", r.status_code)
-#     print(r.text)
-#     exit()
-
-# print("Connected to WAVE")
-
-
-# # ==========================
-# # STEP 2 : CHECK CAMERA
-# # ==========================
-
-# print("Checking camera...")
-
-# r = requests.get(
-#     f"{BASE_URL}/rest/v2/devices",
-#     headers=headers,
-#     timeout=30
-# )
-
-# if r.status_code != 200:
-#     print("Could not get devices.")
-#     print("Status:", r.status_code)
-#     print(r.text)
-#     exit()
-
-# if CAMERA_ID not in r.text:
-#     print("Camera not found.")
-#     exit()
-
-# print("Camera found")
-
-
-# # ==========================
-# # STEP 3 : CHECK ARCHIVE API
-# # ==========================
-
-# print("Checking archive availability API...")
-
-# r = requests.get(
-#     f"{BASE_URL}/ec2/recordedTimePeriods",
-#     headers=headers,
-#     params={"cameraId": CAMERA_ID},
-#     timeout=30
-# )
-
-# if r.status_code != 200:
-#     print("Could not query archive.")
-#     print("Status:", r.status_code)
-#     print(r.text)
-#     exit()
-
-# print("Archive API responded")
-
-
-# # ==========================
-# # STEP 4 : CREATE PLAYBACK TICKET
-# # ==========================
-
-# print("Creating playback ticket...")
-
-# r = requests.post(
-#     f"{BASE_URL}/rest/v3/login/tickets",
-#     headers=headers,
-#     json={},
-#     timeout=30
-# )
-
-# if r.status_code != 200:
-#     print("Could not create playback ticket.")
-#     print("Status:", r.status_code)
-#     print(r.text)
-#     exit()
-
-# playback_ticket = r.json()["token"]
-
-# print("Playback ticket created")
-
-
-# # ==========================
-# # STEP 5 : DOWNLOAD PLAYBACK STREAM
-# # ==========================
-
-# import os
-# import json
-# from urllib.parse import urlencode
-
-# position_ms = ticket_time_to_ms(TICKET_TIME)
-
-# media_url = f"{BASE_URL}/rest/v3/devices/{CAMERA_ID}/media.webm"
-
-# params = {
-#     "positionMs": position_ms,
-#     "durationMs": DURATION_SECONDS * 1000,
-#     "resolution": RESOLUTION,
-#     "stream": "secondary",
-#     "accurateSeek": "true",
-#     "download": "true",
-#     "_ticket": playback_ticket,
-# }
-
-# print("\nDEBUG PARAMS")
-# print(json.dumps(params, indent=2))
-# print("\nFULL URL")
-# print(media_url + "?" + urlencode(params))
-
-# print("\nCHECKING FOOTAGE FOR SAME TIME")
-# footage_params = {
-#     "startTimeMs": position_ms - 60000,
-#     "endTimeMs": position_ms + 60000,
-#     "preciseBounds": "true",
-#     "periodType": "recording",
-# }
-
-# footage = requests.get(
-#     f"{BASE_URL}/rest/v3/devices/{CAMERA_ID}/footage",
-#     headers=headers,
-#     params=footage_params,
-#     timeout=30
-# )
-
-# print("Footage status:", footage.status_code)
-# print("Footage response:", footage.text[:1000])
-
-# response = requests.get(
-#     media_url,
-#     params=params,
-#     stream=True,
-#     timeout=300
-# )
-
-# print("\nMEDIA RESPONSE")
-# print("Status:", response.status_code)
-# print("URL:", response.url)
-# print("Headers:", dict(response.headers))
-
-# downloaded = 0
-
-# with open(OUTPUT_FILE, "wb") as f:
-#     for chunk in response.iter_content(chunk_size=1024 * 1024):
-#         if chunk:
-#             f.write(chunk)
-#             downloaded += len(chunk)
-#             print("Downloaded bytes:", downloaded)
-
-# response.close()
-
-# print("\nDONE")
-# print("Saved to:", OUTPUT_FILE)
-# print("Final size:", os.path.getsize(OUTPUT_FILE))
-
 import os
+import re
+import pandas as pd
 import json
 from datetime import datetime
+from wsgiref import headers
 from zoneinfo import ZoneInfo
 from urllib.parse import urlencode
 import requests
+from dotenv import load_dotenv
+import time
+load_dotenv()
 
 
-CLOUD_BASE_URL = "https://sync.wavevms.com"
-SYSTEM_ID = "edbde632-d846-49f5-8fc8-7fdaaa2504e7"
-BASE_URL = f"https://{SYSTEM_ID}.relay-us-chi-2-prod-dp.vmsproxy.com"
-USERNAME = "bwoods@sos-llc.net"
-PASSWORD = "Walk36toolfun!"
-CAMERA_ID = "4f68efaf-da80-b7f7-94af-f895e6c42e5e"
-SERVER_GUID = "fafd22b6-2eb6-a286-1746-922a1d62e77c"
-TICKET_TIME = "2026-06-25T12:48:00"
-TIMEZONE = "America/New_York"
-DURATION_SECONDS = 8
-OUTPUT_FILE = "truck_video.webm"
+CLOUD_BASE_URL = os.environ.get("WAVE_CLOUD_BASE_URL", "https://sync.wavevms.com")
+SYSTEM_ID = os.environ.get("WAVE_SYSTEM_ID", "edbde632-d846-49f5-8fc8-7fdaaa2504e7")
+BASE_URL = f"https://{SYSTEM_ID}.relay.vmsproxy.com"
+USERNAME = os.environ.get("WAVE_USERNAME")
+PASSWORD = os.environ.get("WAVE_PASSWORD")
+CAMERA_ID = os.environ.get("WAVE_CAMERA_ID")
+SERVER_GUID = os.environ.get("WAVE_SERVER_GUID")
+TIMEZONE = os.environ.get("APP_TIMEZONE", "America/Chicago")
+DURATION_SECONDS = int(os.environ.get("WAVE_FOOTAGE_DURATION_SECONDS", 8))
+OUTPUT_FILE = f"truck_video.webm"
 RESOLUTION = "1024x452"
 
+
+def estimate_max_bytes(bitrate_mbps, duration_seconds, safety_factor=2.5):
+    return int((bitrate_mbps * 1_000_000 / 8) * duration_seconds * safety_factor)
 
 def ticket_time_to_ms(ticket_time: str) -> int:
     dt = datetime.strptime(ticket_time, "%Y-%m-%dT%H:%M:%S")
     dt = dt.replace(tzinfo=ZoneInfo(TIMEZONE))
     return int(dt.timestamp() * 1000)
 
-#========================== STEP 1 : GET CLOUD ACCESS TOKEN ==========================
-print("Getting cloud access token...")
+def get_cloud_access_token():
+    print("Getting cloud access token...")
+    r = requests.post(
+        f"{CLOUD_BASE_URL}/cdb/oauth2/token",
+        json={
+            "grant_type": "password",
+            "response_type": "token",
+            "client_id": "3rdParty",
+            "scope": f"cloudSystemId={SYSTEM_ID}",
+            "username": USERNAME,
+            "password": PASSWORD,
+        },
+        timeout=30,
+    )
+    if r.status_code != 200:
+        print(r.text)
+        return None
+    return r
 
-r = requests.post(
-    f"{CLOUD_BASE_URL}/cdb/oauth2/token",
-    json={
-        "grant_type": "password",
-        "response_type": "token",
-        "client_id": "3rdParty",
-        "scope": f"cloudSystemId={SYSTEM_ID}",
-        "username": USERNAME,
-        "password": PASSWORD,
-    },
-    timeout=30,
-)
+def check_relay_url(access_token):
+    print("Checking relay URL...")
+    r = requests.get(
+        f"{BASE_URL}/rest/v4/login/sessions/{access_token}",
+        timeout=30,
+        allow_redirects=True,
+    )
+    if r.status_code != 200:
+        print("Cannot connect to relay.")
+        exit()
+    return r
 
-print("OAuth status:", r.status_code)
-#========================== STEP 2 : CHECK  WAVE RESPONSE ==========================
-if r.status_code != 200:
-    print(r.text)
-    exit()
+def check_wave_connection(access_token, BASE_URL_REDIRECT_ROOT):
+    headers = {
+        "Authorization": f"Bearer {access_token}"
+    }
+    print("Checking WAVE connection...")
+    r = requests.get(
+        f"{BASE_URL_REDIRECT_ROOT}/rest/v4/servers",
+        headers = headers,
+        timeout=30,
+    )
+    if r.status_code != 200:
+        print("Cannot connect to WAVE.")
+        return None
+    return r
 
-access_token = r.json()["access_token"]
-print("Access token:", access_token)
-if not access_token.startswith("nxcdb-"):
-    access_token = "nxcdb-" + access_token
+def check_camera(access_token, BASE_URL_REDIRECT_ROOT):
+    headers = {
+        "Authorization": f"Bearer {access_token}"
+    }
 
-headers = {
-    "Authorization": f"Bearer {access_token}",
-    "Accept": "application/json, text/plain, */*",
-    "Content-Type": "application/json",
-}
-print(headers)
-r = requests.get(
-    f"{BASE_URL}/rest/v3/login/sessions/{access_token}",
-    timeout=30
-)
+    r = requests.get(
+        f"{BASE_URL_REDIRECT_ROOT}/rest/v4/devices",
+        headers=headers,
+        timeout=30,
+    )
+    if r.status_code != 200:
+        print("Could not get devices.")
+        print(r.text)
+        return None
 
-print(r.status_code)
-print(r.text)
-print("Checking WAVE connection...")
+    if CAMERA_ID not in r.text:
+        print("Camera not found.")
+        return None
+    return r
 
-r = requests.get(
-    f"{BASE_URL}/rest/v3/servers",
-    headers=headers,
-    timeout=30,
-)
+def check_device_details(access_token, BASE_URL_REDIRECT_ROOT):
+    headers = {
+        "Authorization": f"Bearer {access_token}"
+    }
 
-if r.status_code != 200:
-    print("Cannot connect to WAVE.")
-    print(r.text)
-    exit()
+    r = requests.get(
+        f"{BASE_URL_REDIRECT_ROOT}/rest/v4/devices/{CAMERA_ID}",
+        headers=headers,
+        timeout=30,
+    )
+    if r.status_code != 200:
+        print("Could not get device details.")
+        print(r.text)
+        return None
 
-print("Connected to WAVE")
+    if CAMERA_ID not in r.text:
+        print("Camera not found.")
+        return None
+    
+    return r
 
-#========================== STEP 2 : CHECK  Camera RESPONSE ==========================
-print("Checking camera...")
+def create_playback_ticket(access_token, BASE_URL_REDIRECT_ROOT):
+    headers = {
+        "Authorization": f"Bearer {access_token}"
+    }
+    r = requests.post(
+        f"{BASE_URL_REDIRECT_ROOT}/rest/v3/login/tickets",
+        headers=headers,
+        json={},
+        timeout=30,
+    )
 
-r = requests.get(
-    f"{BASE_URL}/rest/v3/devices",
-    headers=headers,
-    timeout=30,
-)
+    if r.status_code != 200:
+        print("Could not create playback ticket.")
+        print(r.text)
+        return None
 
-if r.status_code != 200:
-    print("Could not get devices.")
-    print(r.text)
-    exit()
+    playback_ticket = r.json()["token"]
+    return playback_ticket
 
-if CAMERA_ID not in r.text:
-    print("Camera not found.")
-    exit()
+    position_ms = ticket_time_to_ms(TICKET_TIME)
 
-print("Camera found")
+def check_footage_at_timestamp(BASE_URL_REDIRECT_ROOT, playback_ticket, ticket_time):
+    position_ms = ticket_time_to_ms(ticket_time)
+    end_position_ms = position_ms + (DURATION_SECONDS * 1000)
+    footage = requests.get(
+        f"{BASE_URL_REDIRECT_ROOT}/rest/v4/devices/{CAMERA_ID}/footage",
+        params={
+            "startTimeMs": position_ms,
+            "endTimeMs": end_position_ms,
+            "periodType": "recording",
+            "preciseBounds": "true",
+            "_ticket": playback_ticket,
+        },
+        timeout=30,
+    )
+    if footage.status_code != 200:
+        print("Could not check footage.")
+        print(footage.text)
+        return None
+    return footage
 
-#========================== Format 1 to extract footage ==========================
+def download_playback_stream(BASE_URL_REDIRECT_ROOT, playback_ticket,ticket_time):
+    position_ms = ticket_time_to_ms(ticket_time)
 
-print("Creating playback ticket...")
+    media_url = f"{BASE_URL_REDIRECT_ROOT}/rest/v3/devices/{CAMERA_ID}/media.mp4"
 
-r = requests.post(
-    f"{BASE_URL}/rest/v3/login/tickets",
-    headers=headers,
-    json={},
-    timeout=30,
-)
+    params = {
+        "resolution": RESOLUTION,
+        "positionMs": position_ms,
+        "_ticket": playback_ticket,
+        "Server-Guid": SERVER_GUID,
+    }
 
-if r.status_code != 200:
-    print("Could not create playback ticket.")
-    print(r.text)
-    exit()
+    response = requests.get(
+        media_url,
+        params=params,
+        stream=True,
+        timeout=120,
+    )
 
-playback_ticket = r.json()["token"]
+    if response.status_code != 200:
+        print("Download failed.")
+        print(response.text)
+        return None
 
-print("Playback ticket created")
+    downloaded = 0
+    start_time = time.time()
+    OUTPUT_FILE_NAME = f"truck_video_{ticket_time.replace(':', '-')}.mp4"
 
-position_ms = ticket_time_to_ms(TICKET_TIME)
+    with open(OUTPUT_FILE_NAME, "wb") as f:
+        for chunk in response.iter_content(chunk_size=1024):
+            if chunk:
+                f.write(chunk)
+                downloaded += len(chunk)
 
-media_url = f"{BASE_URL}/rest/v3/devices/{CAMERA_ID}/media.webm"
+            if time.time() - start_time >= DURATION_SECONDS:
+                break
 
-params = {
-    "resolution": RESOLUTION,
-    "positionMs": position_ms,
-    "_ticket": playback_ticket,
-    "Server-Guid": SERVER_GUID,
-}
+    response.close()
+    return OUTPUT_FILE_NAME
 
-print("Downloading playback stream...")
-print("Start time:", TICKET_TIME)
-print("Position ms:", position_ms)
 
-response = requests.get(
-    media_url,
-    params=params,
-    stream=True,
-    timeout=120,
-)
 
-print("HTTP Status:", response.status_code)
-print("Content-Type:", response.headers.get("Content-Type"))
+def download_playback_stream_v2(BASE_URL_REDIRECT_ROOT, playback_ticket,ticket_time):
+    position_ms = ticket_time_to_ms(ticket_time)
+    end_position_ms = position_ms + (DURATION_SECONDS * 1000)
 
-if response.status_code != 200:
-    print("Download failed.")
-    print(response.text)
-    exit()
+    media_url = f"{BASE_URL_REDIRECT_ROOT}/rest/v3/devices/{CAMERA_ID}/media.mp4"
+    params = {
+        "resolution": RESOLUTION,
+        "positionMs": position_ms,
+        "accurateSeek":"false",
+        "stream":"secondary",
+        "endPositionMs": end_position_ms,
+        "_ticket": playback_ticket,
+        "download": "true",
+    }
+    response = requests.get(
+        media_url,
+        params=params,
+        stream=True,
+        timeout=1000,
+    )
+    print("############################################################# Status:", response.status_code)
+    print("############################################################# URL:", response.url)
+    print("############################################################# Headers:", dict(response.headers))
+    if response.status_code != 200:
+        print("Download failed.")
+        print(response.text)
+        return None
+    downloaded = 0
+    output_file_name = f"truck_video_{ticket_time.replace(':', '-')}_V2.mp4"
+    with open(output_file_name, "wb") as f:
+        for chunk in response.iter_content(chunk_size=1024 * 1024):
+            if chunk:
+                f.write(chunk)
+                downloaded += len(chunk)
+    response.close()
+    if downloaded == 0:
+        print("File is empty. Timestamp likely has no recorded footage.")
+        return None
+    print("Saved:", output_file_name)
+    print("Bytes:", downloaded)
+    return output_file_name
 
-downloaded = 0
-start_time = time.time()
 
-with open(OUTPUT_FILE, "wb") as f:
-    for chunk in response.iter_content(chunk_size=1024):
+
+def download_playback_stream_v3(BASE_URL_REDIRECT_ROOT, playback_ticket,ticket_time, output_file_name):
+    position_ms = ticket_time_to_ms(ticket_time)
+
+    media_url = f"{BASE_URL_REDIRECT_ROOT}/rest/v3/devices/{CAMERA_ID}/media.mpjpeg"
+
+    params = {
+        "positionMs": position_ms,
+        "stream": "primary",
+        "resolution": RESOLUTION,
+        "accurateSeek": "true",
+        "_ticket": playback_ticket,
+    }
+
+    response = requests.get(
+        media_url,
+        params=params,
+        stream=True,
+        timeout=120,
+    )
+
+    if response.status_code != 200:
+        print("Snapshot request failed")
+        print(response.text)
+        return None
+    
+    buffer = b""
+
+    for chunk in response.iter_content(chunk_size=4096):
         if chunk:
-            f.write(chunk)
-            downloaded += len(chunk)
+            buffer += chunk
 
-        if time.time() - start_time >= DURATION_SECONDS:
-            break
+            start = buffer.find(b"\xff\xd8")
+            end = buffer.find(b"\xff\xd9")
 
-response.close()
+            if start != -1 and end != -1 and end > start:
+                jpg_data = buffer[start:end + 2]
 
-print("Download completed.")
-print("Downloaded bytes:", downloaded)
-print("Saved to:", OUTPUT_FILE)
+                with open(output_file_name, "wb") as f:
+                    f.write(jpg_data)
 
-if downloaded == 0:
-    print("Warning: File is empty. Check timestamp and archive availability.")
+                response.close()
+                return output_file_name
 
-
-#========================== Format 2 to extract footage ==========================
-
-
-# position_ms = ticket_time_to_ms(TICKET_TIME)
-
-# print("Checking footage at requested time...")
-
-# footage_params = {
-#     "startTimeMs": position_ms - 60000,
-#     "endTimeMs": position_ms + 60000,
-#     "preciseBounds": "true",
-#     "periodType": "recording",
-# }
-
-# footage = requests.get(
-#     f"{BASE_URL}/rest/v3/devices/{CAMERA_ID}/footage",
-#     headers=headers,
-#     params=footage_params,
-#     timeout=30,
-# )
-
-# print("Footage status:", footage.status_code)
-# print("Footage response:", footage.text[:1000])
-
-# if footage.status_code != 200:
-#     print("Could not check footage.")
-#     exit()
-
-# if footage.text.strip() == "[]":
-#     print("No footage found at this time. Not downloading.")
-#     exit()
+    response.close()
+    print("No JPEG frame found")
+    return None
 
 
-# print("Creating playback ticket...")
+if __name__ == "__main__":
+    df = pd.read_csv("latest_100.csv")
 
-# r = requests.post(
-#     f"{BASE_URL}/rest/v3/login/tickets",
-#     headers=headers,
-#     json={},
-#     timeout=30,
-# )
+    TICKET_TIMES = df["created_at"].tolist()
+    TICKET_NUMBERS = df["ticket_number"].tolist()
+    MATERIAL_NAMES = df["material_name_snapshot"].tolist()
+    total_times = len(TICKET_TIMES)
+    print(f"Total ticket times to process: {total_times}")
+    access_token_response = get_cloud_access_token()
+    if access_token_response is None:
+        exit()
 
-# if r.status_code != 200:
-#     print("Could not create playback ticket.")
-#     print(r.text)
-#     exit()
+    access_token = access_token_response.json()["access_token"]
+    if not access_token.startswith("nxcdb-"):
+        access_token = "nxcdb-" + access_token
 
-# playback_ticket = r.json()["token"]
+    relay_response = check_relay_url(access_token)
+    BASE_URL_REDIRECT_ROOT = relay_response.url.split("/rest/v4/login/sessions/")[0]
 
-# print("Playback ticket created")
+    wave_response = check_wave_connection(access_token, BASE_URL_REDIRECT_ROOT)
+    if wave_response is None:
+        exit()
+
+    camera_response = check_camera(access_token, BASE_URL_REDIRECT_ROOT)
+    if camera_response is None:
+        exit()
+    device_details_response = check_device_details(access_token, BASE_URL_REDIRECT_ROOT)
+    if device_details_response is None:
+        exit()
+    print(DURATION_SECONDS)
 
 
-# media_url = f"{BASE_URL}/rest/v3/devices/{CAMERA_ID}/media.webm"
+    for i, TICKET_TIME in enumerate(TICKET_TIMES):
+        counter = i + 1
+        TKT_NUMBER = TICKET_NUMBERS[i]
+        MATERIAL_NAME = MATERIAL_NAMES[i]
+        MATERIAL_NAME = re.sub(r'[<>:"/\\|?*]', "_", MATERIAL_NAME)
+        folder = os.path.join("Materials", MATERIAL_NAME)
+        os.makedirs(folder, exist_ok=True)
 
-# params = {
-#     "positionMs": position_ms,
-#     "durationMs": DURATION_SECONDS * 1000,
-#     "resolution": RESOLUTION,
-#     "stream": "secondary",
-#     "accurateSeek": "true",
-#     "download": "true",
-#     "_ticket": playback_ticket,
-# }
+        playback_ticket = create_playback_ticket(access_token, BASE_URL_REDIRECT_ROOT)
+        if playback_ticket is None:
+            print(f"File {counter}/{total_times} could not create playback ticket.")
+            continue
 
-# print("\nDownload URL:")
-# print(media_url + "?" + urlencode(params))
+        footage_response = check_footage_at_timestamp(BASE_URL_REDIRECT_ROOT, playback_ticket, TICKET_TIME)
+        if footage_response is None:
+            print(f"File {counter}/{total_times} could not check footage.")
+            continue
 
-# response = requests.get(
-#     media_url,
-#     params=params,
-#     stream=True,
-#     timeout=300,
-# )
+        playback_ticket = create_playback_ticket(access_token, BASE_URL_REDIRECT_ROOT)
+        if playback_ticket is None:
+            print(f"File {counter}/{total_times} could not create playback ticket.")
+            continue
+        Output_file_name = os.path.join(
+            folder,
+            f"Truck_image_{TICKET_TIME.replace(':', '-')}_{TKT_NUMBER}.jpeg"
+        )
+        downloaded_file = download_playback_stream_v3(BASE_URL_REDIRECT_ROOT, playback_ticket, TICKET_TIME, Output_file_name)
+        if downloaded_file is None:
+            print(f"File {counter}/{total_times} download failed.")
+            continue
 
-# print("Media status:", response.status_code)
-# print("Headers:", dict(response.headers))
+        if os.path.getsize(downloaded_file) == 0:
+            print(f"File {counter}/{total_times} is empty. Timestamp likely has no recorded footage.")
+            continue
 
-# if response.status_code != 200:
-#     print("Download failed.")
-#     print(response.text)
-#     exit()
-
-# downloaded = 0
-
-# with open(OUTPUT_FILE, "wb") as f:
-#     for chunk in response.iter_content(chunk_size=1024 * 1024):
-#         if chunk:
-#             f.write(chunk)
-#             downloaded += len(chunk)
-#             print("Downloaded bytes:", downloaded)
-
-# response.close()
-
-# print("\nDone")
-# print("Saved to:", OUTPUT_FILE)
-# print("Final size:", os.path.getsize(OUTPUT_FILE))
-
-# if os.path.getsize(OUTPUT_FILE) == 0:
-#     print("File is empty. Timestamp likely has no recorded footage.")
+        print(f"File {counter}/{total_times} saved to:", downloaded_file)

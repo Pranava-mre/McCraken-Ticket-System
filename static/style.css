@@ -468,6 +468,30 @@ td {
     display: inline;
 }
 
+/* Keep search/reprint table columns stable; avoid using global .actions flex on td elements. */
+.table-actions {
+    vertical-align: top;
+}
+
+.table-actions.image-cell {
+    min-width: 100px;
+}
+
+.table-actions.action-cell {
+    min-width: 140px;
+    white-space: nowrap;
+}
+
+.table-actions.action-cell a,
+.table-actions.action-cell .inline-form {
+    display: inline-block;
+    margin-right: 8px;
+}
+
+.table-actions.action-cell .inline-form {
+    margin-top: 0;
+}
+
 .table-wrap {
     overflow-x: auto;
 }

@@ -8,6 +8,7 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .mypy_cache/
+material_ai_copy.py
 
 # Virtual environments
 .venv/
@@ -22,9 +23,20 @@ venv/
 tickets_pdf/
 reports_pdf/
 tmp_print/
+runs/
+
+# Ignore all CSV files
+*.csv
+
+# Ignore any folder whose name starts with "material"
+material*/
 
 # Local data/cache artifacts
 data/jobs_remote_cache.csv
+
+#yolo models
+yolo11n-cls.pt
+
 
 # OS/editor
 .vscode/

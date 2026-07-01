@@ -36,6 +36,7 @@
 </section>
 
 <section class="card">
+    <div id="image_generate_notice" class="flash" style="display:none;"></div>
     <table>
         <thead>
             <tr>
@@ -48,6 +49,7 @@
                 <th>Truck</th>
                 <th>Material</th>
                 <th>Cost</th>
+                <th>Image</th>
                 <th>Actions</th>
             </tr>
         </thead>
@@ -63,7 +65,19 @@
                 <td>{{ t.truck_number_snapshot }}</td>
                 <td>{{ t.material_name_snapshot }}</td>
                 <td>${{ "%.2f"|format(t.cost or 0) }}</td>
-                <td class="actions">
+                <td class="table-actions image-cell">
+                    {% if t.image_view_url %}
+                    <a href="{{ t.image_view_url }}" target="_blank" rel="noopener">View</a>
+                    {% else %}
+                    <form method="post" action="/api/tickets/{{ t.id }}/generate-image" class="inline-form js-generate-image-form" data-ticket-id="{{ t.id }}" data-ticket-number="{{ t.ticket_number }}">
+                        <button type="submit">Generate</button>
+                    </form>
+                    {% if t.image_status and t.image_status != 'READY' %}
+                    <span>{{ t.image_status }}</span>
+                    {% endif %}
+                    {% endif %}
+                </td>
+                <td class="table-actions action-cell">
                     {% if t.has_pdf %}
                     <a href="{{ url_for('ticket_pdf', ticket_id=t.id) }}">PDF</a>
                     <a
@@ -80,9 +94,68 @@
                 </td>
             </tr>
             {% else %}
-            <tr><td colspan="10">No tickets found.</td></tr>
+            <tr><td colspan="11">No tickets found.</td></tr>
             {% endfor %}
         </tbody>
     </table>
 </section>
+
+<script>
+    (function () {
+        const notice = document.getElementById("image_generate_notice");
+        const forms = document.querySelectorAll(".js-generate-image-form");
+
+        function showNotice(message, category) {
+            if (!notice) return;
+            notice.className = "flash " + (category || "success");
+            notice.textContent = message || "";
+            notice.style.display = "block";
+            window.setTimeout(() => {
+                notice.style.display = "none";
+            }, 4500);
+        }
+
+        forms.forEach((form) => {
+            form.addEventListener("submit", async (event) => {
+                event.preventDefault();
+
+                const button = form.querySelector("button[type='submit']");
+                const cell = form.closest("td");
+                const ticketNumber = form.dataset.ticketNumber || "ticket";
+                if (!button || !cell) return;
+
+                const originalText = button.textContent;
+                button.disabled = true;
+                button.textContent = "Generating...";
+
+                try {
+                    const response = await fetch(form.action, {
+                        method: "POST",
+                        headers: {
+                            "Accept": "application/json"
+                        }
+                    });
+
+                    const data = await response.json();
+                    if (response.ok && data && data.ok) {
+                        const imageUrl = (data.image_url || "").trim();
+                        if (imageUrl) {
+                            cell.innerHTML = '<a href="' + imageUrl + '" target="_blank" rel="noopener">View</a>';
+                        }
+                        showNotice("Image generated for " + ticketNumber + ".", "success");
+                    } else {
+                        const message = (data && data.message) ? data.message : "Could not generate image.";
+                        showNotice("Image generation failed for " + ticketNumber + ": " + message, "error");
+                        button.disabled = false;
+                        button.textContent = originalText;
+                    }
+                } catch (err) {
+                    showNotice("Image generation failed for " + ticketNumber + ": network error.", "error");
+                    button.disabled = false;
+                    button.textContent = originalText;
+                }
+            });
+        });
+    })();
+</script>
 {% endblock %}
