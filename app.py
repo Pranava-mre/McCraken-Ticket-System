@@ -4738,7 +4738,8 @@ def reports():
             t.truck_number_snapshot,
             t.quantity,
             t.unit,
-            t.cost
+            t.cost,
+            t.image_url
         FROM tickets t
         WHERE {where_sql}
         ORDER BY 
@@ -4755,6 +4756,9 @@ def reports():
         tuple(params+[offset]),
         )
         tickets = cursor.fetchall()
+
+    for ticket in tickets:
+        ticket["image_view_url"] = build_ticket_image_view_url(ticket.get("image_url"))
 
     with db.cursor() as cursor:
         cursor.execute(

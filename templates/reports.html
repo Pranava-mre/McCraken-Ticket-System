@@ -182,6 +182,7 @@
                     <th>Quantity</th>
                     <th>Unit</th>
                     <th>Cost</th>
+                    <th>Image</th>
                 </tr>
             </thead>
             <tbody>
@@ -198,6 +199,13 @@
                         <td>{{ "%.2f"|format(t.quantity) }}</td>
                         <td>{{ t.unit }}</td>
                         <td>${{ "%.2f"|format(t.cost or 0) }}</td>
+                        <td>
+                            {% if t.image_view_url %}
+                                <a href="{{ t.image_view_url }}" target="_blank" rel="noopener">View</a>
+                            {% else %}
+                                No image found
+                            {% endif %}
+                        </td>
                     </tr>
                 {% endfor %}
             </tbody>
