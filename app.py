@@ -107,7 +107,7 @@ AZURE_IMAGE_SAS_MINUTES = int(os.getenv("AZURE_IMAGE_SAS_MINUTES", "180").strip(
 RFID_EVENT_API_KEY = os.getenv("RFID_EVENT_API_KEY", "").strip()
 RFID_WEBHOOK_USERNAME = os.getenv("RFID_WEBHOOK_USERNAME", "").strip()
 RFID_WEBHOOK_PASSWORD = os.getenv("RFID_WEBHOOK_PASSWORD", "").strip()
-NOTIFICATIONS_ENABLED = os.getenv("NOTIFICATIONS_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+NOTIFICATIONS_ENABLED = os.getenv("NOTIFICATIONS_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 app.config["NOTIFICATIONS_ENABLED"] = NOTIFICATIONS_ENABLED
 try:
     RFID_NOTIFICATION_COOLDOWN_SECONDS = max(
