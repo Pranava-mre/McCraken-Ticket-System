@@ -1792,7 +1792,7 @@ def non_credit_card_daily_report_to_pdf_bytes(rows, report_start_date, report_en
     def append_external_customer_page(customer_name, customer_rows):
         customer_total = sum(float(r.get("cost") or 0) for r in customer_rows)
 
-        elements.append(Paragraph("Section 1: Non-MREX / Non-Petty Group / Non-Redcon", subheading))
+        # elements.append(Paragraph("Section 1: Non-MREX / Non-Petty Group / Non-Redcon", subheading))
         elements.append(Paragraph(f"Customer: {customer_name}", subheading))
         elements.append(Paragraph(f"Transactions: {len(customer_rows)} | Total amount: {format_currency(customer_total)}", normal))
         elements.append(Spacer(1, 6))
@@ -1991,7 +1991,7 @@ def customer_grouped_report_to_pdf_bytes(rows, filters):
     def append_external_customer_page(customer_name, customer_rows):
         customer_total = sum(float(r.get("cost") or 0) for r in customer_rows)
 
-        elements.append(Paragraph("Section 1: Non-MREX / Non-Petty Group / Non-Redcon", subheading))
+        # elements.append(Paragraph("Section 1: Non-MREX / Non-Petty Group / Non-Redcon", subheading))
         elements.append(Paragraph(f"Customer: {customer_name}", subheading))
         elements.append(Paragraph(f"Transactions: {len(customer_rows)} | Total amount: {format_currency(customer_total)}", normal))
         elements.append(Spacer(1, 6))

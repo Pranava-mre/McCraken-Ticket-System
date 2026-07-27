@@ -113,25 +113,6 @@
                     }, 5000);
                 }
 
-                function isNotificationForToday(notification) {
-                    const raw = notification && (notification.detected_at || notification.created_at);
-                    if (!raw) {
-                        return false;
-                    }
-                    const d = new Date(raw);
-                    if (Number.isNaN(d.getTime())) {
-                        return false;
-                    }
-                    const now = new Date();
-                    return d.getFullYear() === now.getFullYear()
-                        && d.getMonth() === now.getMonth()
-                        && d.getDate() === now.getDate();
-                }
-
-                function filterTodayNotifications(items) {
-                    return (items || []).filter(isNotificationForToday);
-                }
-
                 function formatTime(value) {
                     if (!value) {
                         return "";
@@ -169,7 +150,7 @@
                     if (!notifications.length) {
                         const empty = document.createElement("div");
                         empty.className = "notification-empty";
-                        empty.textContent = "No notifications for today.";
+                        empty.textContent = "No pending notifications.";
                         list.appendChild(empty);
                         return;
                     }
@@ -231,7 +212,7 @@
                     }
                     isPolling = true;
 
-                    fetch("{{ url_for('api_notifications_list') }}?status=all&limit=120", {
+                    fetch("{{ url_for('api_notifications_list') }}?status=pending&limit=120", {
                         method: "GET",
                         credentials: "same-origin",
                         headers: {
@@ -249,7 +230,9 @@
                                 return;
                             }
 
-                            const incoming = filterTodayNotifications(Array.isArray(payload.notifications) ? payload.notifications : []);
+                            const incoming = (Array.isArray(payload.notifications) ? payload.notifications : []).filter(function (n) {
+                                return (n && (n.status || "pending") === "pending");
+                            });
                             notifications = incoming;
 
                             if (!initialized) {
@@ -300,11 +283,8 @@
                                 throw new Error("decision failed");
                             }
 
-                            notifications = notifications.map(function (n) {
-                                if (n.id === notification.id) {
-                                    return result.payload.notification || n;
-                                }
-                                return n;
+                            notifications = notifications.filter(function (n) {
+                                return n.id !== notification.id;
                             });
 
                             updateBadge();
