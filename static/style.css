@@ -477,6 +477,81 @@ td {
     min-width: 100px;
 }
 
+.image-thumb-trigger {
+    border: 1px solid #cbd5e1;
+    background: #f8fafc;
+    border-radius: 8px;
+    padding: 4px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 72px;
+    height: 72px;
+    overflow: hidden;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+}
+
+.image-thumb-trigger img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 6px;
+}
+
+.image-lightbox {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+}
+
+.image-lightbox.is-open {
+    display: flex;
+}
+
+.image-lightbox-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.75);
+}
+
+.image-lightbox-panel {
+    position: relative;
+    z-index: 1;
+    max-width: min(90vw, 900px);
+    max-height: 90vh;
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 24px 80px rgba(15, 23, 42, 0.3);
+    padding: 18px;
+}
+
+.image-lightbox-panel img {
+    display: block;
+    max-width: 100%;
+    max-height: 80vh;
+    border-radius: 8px;
+}
+
+.image-lightbox-close {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 32px;
+    height: 32px;
+    border: none;
+    border-radius: 50%;
+    background: rgba(15, 23, 42, 0.8);
+    color: #fff;
+    font-size: 26px;
+    line-height: 1;
+    cursor: pointer;
+}
+
 .table-actions.action-cell {
     min-width: 140px;
     white-space: nowrap;

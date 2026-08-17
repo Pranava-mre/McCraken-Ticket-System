@@ -67,7 +67,9 @@
                 <td>${{ "%.2f"|format(t.cost or 0) }}</td>
                 <td class="table-actions image-cell">
                     {% if t.image_view_url %}
-                    <a href="{{ t.image_view_url }}" target="_blank" rel="noopener">View</a>
+                    <button type="button" class="image-thumb-trigger" data-image-url="{{ t.image_view_url }}" aria-label="View image for ticket {{ t.ticket_number }}">
+                        <img src="{{ t.image_view_url }}" alt="Ticket {{ t.ticket_number }} image" loading="lazy">
+                    </button>
                     {% else %}
                     <form method="post" action="/api/tickets/{{ t.id }}/generate-image" class="inline-form js-generate-image-form" data-ticket-id="{{ t.id }}" data-ticket-number="{{ t.ticket_number }}">
                         <button type="submit">Generate</button>
@@ -100,10 +102,22 @@
     </table>
 </section>
 
+<div id="image-lightbox" class="image-lightbox" aria-hidden="true" role="dialog" aria-modal="true" aria-label="Ticket image viewer">
+    <div class="image-lightbox-backdrop" data-close="true"></div>
+    <div class="image-lightbox-panel">
+        <button type="button" class="image-lightbox-close" aria-label="Close image preview">×</button>
+        <img id="image-lightbox-image" src="" alt="Large ticket image preview">
+    </div>
+</div>
+
 <script>
     (function () {
         const notice = document.getElementById("image_generate_notice");
         const forms = document.querySelectorAll(".js-generate-image-form");
+        const lightbox = document.getElementById("image-lightbox");
+        const lightboxImage = document.getElementById("image-lightbox-image");
+        const lightboxClose = lightbox ? lightbox.querySelector(".image-lightbox-close") : null;
+        const preloadedImageUrls = new Set();
 
         function showNotice(message, category) {
             if (!notice) return;
@@ -114,6 +128,59 @@
                 notice.style.display = "none";
             }, 4500);
         }
+
+        function openLightbox(imageUrl) {
+            if (!lightbox || !lightboxImage || !imageUrl) return;
+            lightboxImage.src = imageUrl;
+            lightbox.classList.add("is-open");
+            lightbox.setAttribute("aria-hidden", "false");
+            document.body.style.overflow = "hidden";
+        }
+
+        function preloadImage(imageUrl) {
+            if (!imageUrl || preloadedImageUrls.has(imageUrl)) return;
+            preloadedImageUrls.add(imageUrl);
+            const image = new Image();
+            image.src = imageUrl;
+        }
+
+        function closeLightbox() {
+            if (!lightbox || !lightboxImage) return;
+            lightbox.classList.remove("is-open");
+            lightbox.setAttribute("aria-hidden", "true");
+            lightboxImage.src = "";
+            document.body.style.overflow = "";
+        }
+
+        document.querySelectorAll(".image-thumb-trigger").forEach((trigger) => {
+            trigger.addEventListener("pointerenter", () => {
+                preloadImage(trigger.dataset.imageUrl || "");
+            }, { once: true });
+            trigger.addEventListener("focus", () => {
+                preloadImage(trigger.dataset.imageUrl || "");
+            }, { once: true });
+            trigger.addEventListener("click", () => {
+                openLightbox(trigger.dataset.imageUrl || trigger.querySelector("img")?.getAttribute("src") || "");
+            });
+        });
+
+        if (lightboxClose) {
+            lightboxClose.addEventListener("click", closeLightbox);
+        }
+
+        if (lightbox) {
+            lightbox.addEventListener("click", (event) => {
+                if (event.target && event.target.dataset && event.target.dataset.close === "true") {
+                    closeLightbox();
+                }
+            });
+        }
+
+        document.addEventListener("keydown", (event) => {
+            if (event.key === "Escape" && lightbox && lightbox.classList.contains("is-open")) {
+                closeLightbox();
+            }
+        });
 
         forms.forEach((form) => {
             form.addEventListener("submit", async (event) => {
@@ -140,7 +207,11 @@
                     if (response.ok && data && data.ok) {
                         const imageUrl = (data.image_url || "").trim();
                         if (imageUrl) {
-                            cell.innerHTML = '<a href="' + imageUrl + '" target="_blank" rel="noopener">View</a>';
+                            cell.innerHTML = '<button type="button" class="image-thumb-trigger" data-image-url="' + imageUrl + '" aria-label="View image for ticket ' + ticketNumber + '"><img src="' + imageUrl + '" alt="Ticket ' + ticketNumber + ' image" loading="lazy"></button>';
+                            const newTrigger = cell.querySelector(".image-thumb-trigger");
+                            if (newTrigger) {
+                                newTrigger.addEventListener("click", () => openLightbox(newTrigger.dataset.imageUrl || ""));
+                            }
                         }
                         showNotice("Image generated for " + ticketNumber + ".", "success");
                     } else {
