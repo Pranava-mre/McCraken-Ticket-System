@@ -8,15 +8,25 @@ from openai import OpenAI
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-
 load_dotenv()
 
-client = OpenAI(
-    base_url=os.environ["AZURE_OPENAI_ENDPOINT"],
-    api_key=os.environ["AZURE_OPENAI_API_KEY"]
-)
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
+AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
+MODEL = os.getenv("AZURE_OPENAI_MODEL")
 
-MODEL = os.environ["AZURE_OPENAI_MODEL"]
+if not AZURE_OPENAI_ENDPOINT:
+    raise RuntimeError("AZURE_OPENAI_ENDPOINT is not configured.")
+
+if not AZURE_OPENAI_API_KEY:
+    raise RuntimeError("AZURE_OPENAI_API_KEY is not configured.")
+
+if not MODEL:
+    raise RuntimeError("AZURE_OPENAI_MODEL is not configured.")
+
+client = OpenAI(
+    base_url=AZURE_OPENAI_ENDPOINT,
+    api_key=AZURE_OPENAI_API_KEY
+)
 
 # SYSTEM_PROMPT = """
 # You are the AI assistant for the Mr. Excavator ticketing system.
