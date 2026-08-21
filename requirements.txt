@@ -7,3 +7,5 @@ azure-storage-blob==12.23.1
 openpyxl==3.1.5
 ultralytics==8.4.84
 gunicorn==23.0.0
+mcp
+openai
