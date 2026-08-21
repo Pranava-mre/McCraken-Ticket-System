@@ -6888,7 +6888,7 @@ def admin_customers():
 
 @app.post("/admin/materials/<int:material_id>/toggle")
 def toggle_material(material_id):
-    flash("Direct material status changes are disabled. Use CSV upload to update materials.", "error")
+    flash("Direct material status changes are disabled. Use CSV upload to update materialss.", "error")
     return redirect(url_for("admin_materials"))
 
 
