@@ -4409,7 +4409,6 @@ def api_chat():
 
     try:
         answer = asyncio.run(process_message(message))
-        print("Process message returned:",repr(answer))
     except Exception as exc:
         app.logger.exception("AI assistant request failed.")
         return {"error": f"AI assistant request failed: {exc}"}, 500
