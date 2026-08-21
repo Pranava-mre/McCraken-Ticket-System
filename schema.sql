@@ -150,11 +150,50 @@ CREATE TABLE IF NOT EXISTS tickets (
     FOREIGN KEY(modified_to_id) REFERENCES tickets(id)
 );
 
+CREATE TABLE IF NOT EXISTS material_predictions (
+    id BIGSERIAL PRIMARY KEY,
+    ticket_id BIGINT UNIQUE REFERENCES tickets(id) ON DELETE RESTRICT,
+    ticket_number TEXT NOT NULL,
+    ticket_created_at TEXT NOT NULL DEFAULT '',
+    material_entry TEXT NOT NULL DEFAULT '',
+    image_url TEXT NOT NULL DEFAULT '',
+    predicted_label TEXT NOT NULL DEFAULT '',
+    top1_confidence REAL,
+    top_k_json TEXT NOT NULL DEFAULT '',
+    raw_output_json TEXT NOT NULL DEFAULT '',
+    model_name TEXT NOT NULL DEFAULT '',
+    model_path TEXT NOT NULL DEFAULT '',
+    inference_ms INTEGER,
+    status TEXT NOT NULL DEFAULT '',
+    error_message TEXT NOT NULL DEFAULT '',
+    predicted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS material_prediction_feedback (
+    id BIGSERIAL PRIMARY KEY,
+    prediction_id BIGINT NOT NULL UNIQUE REFERENCES material_predictions(id) ON DELETE RESTRICT,
+    ticket_id BIGINT NOT NULL REFERENCES tickets(id) ON DELETE RESTRICT,
+    ticket_material TEXT NOT NULL,
+    predicted_material TEXT NOT NULL,
+    feedback_type TEXT NOT NULL CHECK (feedback_type IN (
+        'TICKET_MATERIAL_CORRECT',
+        'PREDICTED_MATERIAL_CORRECT',
+        'NEITHER_CORRECT'
+    )),
+    correct_material TEXT,
+    feedback_given_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    feedback_given_by TEXT NOT NULL DEFAULT ''
+);
+
 CREATE INDEX IF NOT EXISTS idx_tickets_created_at ON tickets(created_at);
 CREATE INDEX IF NOT EXISTS idx_tickets_ticket_number ON tickets(ticket_number);
 CREATE INDEX IF NOT EXISTS idx_tickets_job_code ON tickets(job_code_snapshot);
 CREATE INDEX IF NOT EXISTS idx_tickets_truck_number ON tickets(truck_number_snapshot);
 CREATE INDEX IF NOT EXISTS idx_tickets_image_status ON tickets(image_status);
+CREATE INDEX IF NOT EXISTS idx_material_predictions_ticket_number ON material_predictions(ticket_number);
+CREATE INDEX IF NOT EXISTS idx_material_prediction_feedback_ticket_id ON material_prediction_feedback(ticket_id);
 CREATE INDEX IF NOT EXISTS idx_rfid_epc_map_epc ON rfid_epc_truck_map(LOWER(TRIM(epc)));
 CREATE INDEX IF NOT EXISTS idx_rfid_epc_map_truck ON rfid_epc_truck_map(LOWER(TRIM(truck_number)));
 CREATE INDEX IF NOT EXISTS idx_rfid_tag_catalog_epc ON rfid_tag_catalog(LOWER(TRIM(epc)));

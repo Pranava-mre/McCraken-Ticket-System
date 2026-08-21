@@ -6,6 +6,8 @@ import re
 import hmac
 import time
 import threading
+import tempfile
+import asyncio
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,6 +40,11 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.pdfbase.pdfmetrics import stringWidth
 from psycopg2 import IntegrityError
 from psycopg2.extras import RealDictCursor
+
+
+from ticket_service import search_tickets_service
+from chatbot import process_message
+
 
 BlobServiceClient = None
 ContentSettings = None
@@ -138,6 +145,15 @@ WAVE_CAMERA_ID = os.getenv("WAVE_CAMERA_ID", "").strip()
 WAVE_SERVER_GUID = os.getenv("WAVE_SERVER_GUID", "").strip()
 WAVE_IMAGE_RESOLUTION = os.getenv("WAVE_IMAGE_RESOLUTION", "1024x452").strip() or "1024x452"
 WAVE_FOOTAGE_DURATION_SECONDS = max(1, int(os.getenv("WAVE_FOOTAGE_DURATION_SECONDS", "8").strip() or "8"))
+MATERIAL_MODEL_PATH = Path(
+    os.getenv(
+        "MATERIAL_MODEL_PATH",
+        str(BASE_DIR / "runs" / "classify" / "material_model_runs" / "starter_classifier-2" / "weights" / "best.pt"),
+    )
+)
+
+_material_model_lock = threading.Lock()
+_material_model = None
 
 _wave_session_lock = threading.Lock()
 _wave_session_cache = {
@@ -547,6 +563,99 @@ def get_ticket_image_source_row(db, ticket_id):
             (ticket_id,),
         )
         return cursor.fetchone()
+
+
+def get_material_classifier():
+    global _material_model
+
+    with _material_model_lock:
+        if _material_model is not None:
+            return _material_model
+        if not MATERIAL_MODEL_PATH.exists():
+            raise RuntimeError(f"Material model was not found at {MATERIAL_MODEL_PATH}.")
+        try:
+            from ultralytics import YOLO
+        except ImportError as exc:
+            raise RuntimeError("Material detection requires the ultralytics package.") from exc
+        _material_model = YOLO(str(MATERIAL_MODEL_PATH))
+        return _material_model
+
+
+def predict_ticket_material(image_url):
+    if not image_url:
+        raise RuntimeError("Ticket image is not available.")
+
+    response = requests.get(image_url, timeout=60)
+    response.raise_for_status()
+    if not response.content:
+        raise RuntimeError("Ticket image download was empty.")
+
+    temp_path = ""
+    started_at = time.monotonic()
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as temp_file:
+            temp_file.write(response.content)
+            temp_path = temp_file.name
+
+        result = get_material_classifier().predict(temp_path, verbose=False)[0]
+        if result.probs is None:
+            raise RuntimeError("Material model returned no classification probabilities.")
+
+        class_id = int(result.probs.top1)
+        predicted_label = str(result.names[class_id])
+        confidence = float(result.probs.top1conf.item())
+        top5_indices = [int(index) for index in result.probs.top5]
+        top5_confidences = [float(value) for value in result.probs.top5conf]
+        top_k = [
+            {"label": str(result.names[index]), "confidence": confidence_value}
+            for index, confidence_value in zip(top5_indices, top5_confidences)
+        ]
+        return {
+            "predicted_label": predicted_label,
+            "confidence": confidence,
+            "top_k_json": json.dumps(top_k),
+            "raw_output_json": json.dumps({"top1": predicted_label, "top5": top_k}),
+            "inference_ms": round((time.monotonic() - started_at) * 1000),
+        }
+    finally:
+        if temp_path:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+
+def save_material_prediction(db, ticket, prediction=None, error_message=""):
+    image_url = str(ticket.get("image_url") or "").strip()
+    with db.cursor() as cursor:
+        cursor.execute(
+            """
+            INSERT INTO material_predictions (
+                ticket_id, ticket_number, ticket_created_at, material_entry, image_url,
+                predicted_label, top1_confidence, top_k_json, raw_output_json,
+                model_name, model_path, inference_ms, status, error_message, predicted_at, updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+            ON CONFLICT (ticket_id) WHERE ticket_id IS NOT NULL DO NOTHING
+            """,
+            (
+                ticket["id"],
+                ticket["ticket_number"],
+                ticket["created_at"],
+                ticket["material_name_snapshot"],
+                image_url,
+                str((prediction or {}).get("predicted_label") or ""),
+                (prediction or {}).get("confidence"),
+                str((prediction or {}).get("top_k_json") or ""),
+                str((prediction or {}).get("raw_output_json") or ""),
+                "YOLO material classifier",
+                str(MATERIAL_MODEL_PATH),
+                (prediction or {}).get("inference_ms"),
+                "COMPLETED" if prediction else "ERROR",
+                error_message,
+            ),
+        )
+        return cursor.rowcount == 1
 
 
 def get_blob_service_client():
@@ -1049,6 +1158,61 @@ def ensure_db_migrations(conn):
         cursor.execute("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS image_status TEXT NOT NULL DEFAULT ''")
         cursor.execute("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS image_error TEXT NOT NULL DEFAULT ''")
         cursor.execute("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS image_generated_at TEXT")
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS material_predictions (
+                id BIGSERIAL PRIMARY KEY,
+                ticket_number TEXT NOT NULL,
+                ticket_created_at TEXT NOT NULL DEFAULT '',
+                material_entry TEXT NOT NULL DEFAULT '',
+                image_url TEXT NOT NULL DEFAULT '',
+                predicted_label TEXT NOT NULL DEFAULT '',
+                top1_confidence REAL,
+                top_k_json TEXT NOT NULL DEFAULT '',
+                raw_output_json TEXT NOT NULL DEFAULT '',
+                model_name TEXT NOT NULL DEFAULT '',
+                model_path TEXT NOT NULL DEFAULT '',
+                inference_ms INTEGER,
+                status TEXT NOT NULL DEFAULT '',
+                error_message TEXT NOT NULL DEFAULT '',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        cursor.execute("ALTER TABLE material_predictions ADD COLUMN IF NOT EXISTS ticket_id BIGINT")
+        cursor.execute("ALTER TABLE material_predictions ADD COLUMN IF NOT EXISTS predicted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+        cursor.execute(
+            """
+            UPDATE material_predictions p
+            SET ticket_id = t.id
+            FROM tickets t
+            WHERE p.ticket_id IS NULL
+              AND p.ticket_number = t.ticket_number
+            """
+        )
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_material_predictions_ticket_id ON material_predictions(ticket_id) WHERE ticket_id IS NOT NULL")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_material_predictions_ticket_number ON material_predictions(ticket_number)")
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS material_prediction_feedback (
+                id BIGSERIAL PRIMARY KEY,
+                prediction_id BIGINT NOT NULL UNIQUE REFERENCES material_predictions(id) ON DELETE RESTRICT,
+                ticket_id BIGINT NOT NULL REFERENCES tickets(id) ON DELETE RESTRICT,
+                ticket_material TEXT NOT NULL,
+                predicted_material TEXT NOT NULL,
+                feedback_type TEXT NOT NULL CHECK (feedback_type IN (
+                    'TICKET_MATERIAL_CORRECT',
+                    'PREDICTED_MATERIAL_CORRECT',
+                    'NEITHER_CORRECT'
+                )),
+                correct_material TEXT,
+                feedback_given_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                feedback_given_by TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_material_prediction_feedback_ticket_id ON material_prediction_feedback(ticket_id)")
         cursor.execute("ALTER TABLE tickets ALTER COLUMN pdf_path DROP NOT NULL")
         cursor.execute("ALTER TABLE tickets ALTER COLUMN pdf_blob DROP NOT NULL")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_tickets_active ON tickets(active)")
@@ -2913,10 +3077,6 @@ def get_material_entry_display(db, material_id):
         return ""
     return str(material_row.get("material") or "").strip()
 
-# def list_trucks(db):
-#     return db.execute(
-#         "SELECT id, truck_number, description, truck_size, hauled_by, active FROM trucks WHERE active = 1 ORDER BY truck_number"
-#     ).fetchall()
 def list_customers(db):
     with db.cursor() as cursor:
         cursor.execute(
@@ -2958,6 +3118,98 @@ def list_materials(db, direction=None):
             cursor.execute(
                 "SELECT id, material AS material_name, active, direction FROM material_price WHERE active = TRUE ORDER BY material_name"
             )
+        return cursor.fetchall()
+
+
+def material_detection_review_data(db, date_from, date_to):
+    base_where = """
+        COALESCE(t.active, TRUE) = TRUE
+        AND date(t.created_at) >= date(%s)
+        AND date(t.created_at) <= date(%s)
+    """
+    with db.cursor() as cursor:
+        cursor.execute(
+            f"""
+            SELECT
+                COUNT(*) AS tickets_found,
+                COUNT(*) FILTER (WHERE p.id IS NULL) AS missing_predictions,
+                COUNT(*) FILTER (
+                    WHERE p.status = 'COMPLETED'
+                      AND LOWER(TRIM(p.predicted_label)) = LOWER(TRIM(t.material_name_snapshot))
+                ) AS matches,
+                COUNT(*) FILTER (
+                    WHERE p.status = 'COMPLETED'
+                      AND LOWER(TRIM(p.predicted_label)) <> LOWER(TRIM(t.material_name_snapshot))
+                      AND f.id IS NULL
+                ) AS mismatches_pending_review,
+                COUNT(*) FILTER (
+                    WHERE p.status = 'COMPLETED'
+                      AND LOWER(TRIM(p.predicted_label)) <> LOWER(TRIM(t.material_name_snapshot))
+                      AND f.id IS NOT NULL
+                ) AS feedback_completed
+            FROM tickets t
+            LEFT JOIN material_predictions p ON p.ticket_id = t.id
+            LEFT JOIN material_prediction_feedback f ON f.prediction_id = p.id
+            WHERE {base_where}
+            """,
+            (date_from, date_to),
+        )
+        summary = cursor.fetchone() or {}
+
+        cursor.execute(
+            f"""
+            SELECT
+                t.id AS ticket_id,
+                t.ticket_number,
+                t.created_at,
+                t.material_name_snapshot AS ticket_material,
+                t.image_url,
+                p.id AS prediction_id,
+                p.predicted_label,
+                p.status AS prediction_status,
+                p.error_message
+            FROM tickets t
+            LEFT JOIN material_predictions p ON p.ticket_id = t.id
+            LEFT JOIN material_prediction_feedback f ON f.prediction_id = p.id
+            WHERE {base_where}
+              AND (
+                  p.id IS NULL
+                  OR p.status <> 'COMPLETED'
+                  OR NULLIF(TRIM(p.predicted_label), '') IS NULL
+                  OR (
+                      LOWER(TRIM(p.predicted_label)) <> LOWER(TRIM(t.material_name_snapshot))
+                      AND f.id IS NULL
+                  )
+              )
+            ORDER BY t.created_at DESC, t.id DESC
+            """,
+            (date_from, date_to),
+        )
+        pending_rows = cursor.fetchall()
+
+    for row in pending_rows:
+        row["image_view_url"] = build_ticket_image_view_url(row.get("image_url"))
+    return summary, pending_rows
+
+
+def get_material_detection_candidate_tickets(db, date_from, date_to):
+    with db.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT t.id, t.ticket_number, t.created_at, t.material_name_snapshot, t.image_url
+            FROM tickets t
+            WHERE COALESCE(t.active, TRUE) = TRUE
+              AND date(t.created_at) >= date(%s)
+              AND date(t.created_at) <= date(%s)
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM material_predictions p
+                  WHERE p.ticket_id = t.id
+              )
+            ORDER BY t.created_at ASC, t.id ASC
+            """,
+            (date_from, date_to),
+        )
         return cursor.fetchall()
 
 
@@ -4121,6 +4373,178 @@ def jobs_search():
     return {"jobs": payload}
 
 
+def material_review_date_range():
+    today = app_now().date()
+    date_from = str(request.values.get("date_from") or "").strip()
+    date_to = str(request.values.get("date_to") or "").strip()
+    try:
+        start_date = datetime.fromisoformat(date_from).date() if date_from else today - timedelta(days=3)
+    except ValueError:
+        start_date = today - timedelta(days=3)
+    try:
+        end_date = datetime.fromisoformat(date_to).date() if date_to else today
+    except ValueError:
+        end_date = today
+    if start_date > end_date:
+        start_date, end_date = end_date, start_date
+    return start_date.isoformat(), end_date.isoformat()
+
+
+@app.get("/ai-features")
+def ai_features():
+    return render_template("ai_features.html")
+
+
+@app.get("/ai-assistant")
+def ai_assistant():
+    return render_template("ai_assistant.html")
+
+
+@app.post("/api/chat")
+def api_chat():
+    payload = request.get_json(silent=True) or {}
+    message = str(payload.get("message") or "").strip()
+    if not message:
+        return {"error": "message is required."}, 400
+
+    try:
+        answer = asyncio.run(process_message(message))
+        print("Process message returned:",repr(answer))
+    except Exception as exc:
+        app.logger.exception("AI assistant request failed.")
+        return {"error": f"AI assistant request failed: {exc}"}, 500
+    return {"answer": answer}, 200
+
+
+@app.get("/material-detection-review")
+def material_detection_review():
+    db = get_db()
+    date_from, date_to = material_review_date_range()
+    summary, pending_rows = material_detection_review_data(db, date_from, date_to)
+    return render_template(
+        "material_detection_review.html",
+        date_from=date_from,
+        date_to=date_to,
+        summary=summary,
+        pending_rows=pending_rows,
+        materials=list_materials(db),
+    )
+
+
+@app.post("/material-detection-review/generate")
+def generate_material_detection_predictions():
+    db = get_db()
+    date_from, date_to = material_review_date_range()
+    candidates = get_material_detection_candidate_tickets(db, date_from, date_to)
+    generated_count = 0
+    error_count = 0
+
+    try:
+        for ticket in candidates:
+            image_url = build_ticket_image_view_url(ticket.get("image_url"))
+            try:
+                prediction = predict_ticket_material(image_url)
+                saved = save_material_prediction(db, ticket, prediction=prediction)
+                generated_count += int(saved)
+            except Exception as exc:
+                saved = save_material_prediction(db, ticket, error_message=str(exc))
+                error_count += int(saved)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        flash(f"Could not save material predictions: {exc}", "error")
+        return redirect(url_for("material_detection_review", date_from=date_from, date_to=date_to))
+
+    if not candidates:
+        flash("No tickets without predictions were found in this date range.", "success")
+    else:
+        flash(
+            f"Saved {generated_count} material prediction(s). "
+            f"{error_count} ticket(s) were recorded with prediction errors.",
+            "success" if error_count == 0 else "error",
+        )
+    return redirect(url_for("material_detection_review", date_from=date_from, date_to=date_to))
+
+
+@app.post("/material-detection-review/feedback")
+def save_material_detection_feedback():
+    db = get_db()
+    date_from, date_to = material_review_date_range()
+    feedback_types = {
+        "TICKET_MATERIAL_CORRECT",
+        "PREDICTED_MATERIAL_CORRECT",
+        "NEITHER_CORRECT",
+    }
+    allowed_materials = {
+        str(material.get("material_name") or "").strip()
+        for material in list_materials(db)
+        if str(material.get("material_name") or "").strip()
+    }
+    submitted_ticket_ids = [
+        int(value)
+        for value in request.form.getlist("ticket_id")
+        if str(value).isdigit()
+    ]
+    saved_count = 0
+    errors = []
+    feedback_given_by = str(session.get("username") or session.get("user_name") or "").strip()
+
+    try:
+        for ticket_id in submitted_ticket_ids:
+            feedback_type = str(request.form.get(f"feedback_type_{ticket_id}") or "").strip()
+            if not feedback_type:
+                continue
+            if feedback_type not in feedback_types:
+                errors.append(f"Ticket {ticket_id}: invalid feedback selection.")
+                continue
+
+            correct_material = str(request.form.get(f"correct_material_{ticket_id}") or "").strip()
+            if feedback_type == "NEITHER_CORRECT":
+                if not correct_material:
+                    errors.append(f"Ticket {ticket_id}: select the correct material.")
+                    continue
+                if correct_material not in allowed_materials:
+                    errors.append(f"Ticket {ticket_id}: correct material is no longer available.")
+                    continue
+            else:
+                correct_material = ""
+
+            with db.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO material_prediction_feedback (
+                        prediction_id, ticket_id, ticket_material, predicted_material,
+                        feedback_type, correct_material, feedback_given_by
+                    )
+                    SELECT
+                        p.id, t.id, t.material_name_snapshot, p.predicted_label,
+                        %s, %s, %s
+                    FROM tickets t
+                    JOIN material_predictions p ON p.ticket_id = t.id
+                    LEFT JOIN material_prediction_feedback existing ON existing.prediction_id = p.id
+                    WHERE t.id = %s
+                      AND p.status = 'COMPLETED'
+                      AND LOWER(TRIM(p.predicted_label)) <> LOWER(TRIM(t.material_name_snapshot))
+                      AND existing.id IS NULL
+                    """,
+                    (feedback_type, correct_material or None, feedback_given_by, ticket_id),
+                )
+                saved_count += cursor.rowcount
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        flash(f"Could not save material feedback: {exc}", "error")
+        return redirect(url_for("material_detection_review", date_from=date_from, date_to=date_to))
+
+    if saved_count:
+        flash(f"Saved feedback for {saved_count} ticket(s).", "success")
+    if errors:
+        flash(" ".join(errors), "error")
+    if not saved_count and not errors:
+        flash("No feedback selections were saved.", "error")
+    return redirect(url_for("material_detection_review", date_from=date_from, date_to=date_to))
+
+
 @app.route("/tickets/search", methods=["GET"])
 def search_tickets():
     db = get_db()
@@ -4132,55 +4556,65 @@ def search_tickets():
     date_from = request.args.get("date_from", "").strip()
     date_to = request.args.get("date_to", "").strip()
 
-    query = """
-        SELECT
-            id,
-            ticket_number,
-            created_at,
-            direction,
-            job_code_snapshot,
-            tax_exempt,
-            customer_snapshot,
-            truck_number_snapshot,
-            material_name_snapshot,
-            cost,
-            image_url,
-            image_status,
-            image_error,
-            CASE
-                WHEN pdf_blob IS NOT NULL OR COALESCE(pdf_path, '') <> '' THEN TRUE
-                ELSE FALSE
-            END AS has_pdf
-        FROM tickets
-        WHERE COALESCE(active, TRUE) = TRUE
-    """
-    params = []
-    if ticket_number:
-        query += " AND ticket_number ILIKE %s"
-        params.append(f"%{ticket_number}%")
-    if truck:
-        query += " AND truck_number_snapshot ILIKE %s"
-        params.append(f"%{truck}%")
-    if job:
-        query += " AND job_code_snapshot ILIKE %s"
-        params.append(f"%{job}%")
-    if customer:
-        query += " AND customer_snapshot ILIKE %s"
-        params.append(f"%{customer}%")
-    if material:
-        query += " AND material_name_snapshot ILIKE %s"
-        params.append(f"%{material}%")
-    if date_from:
-        query += " AND date(created_at) >= date(%s)"
-        params.append(date_from)
-    if date_to:
-        query += " AND date(created_at) <= date(%s)"
-        params.append(date_to)
-    query += " ORDER BY created_at DESC, id DESC LIMIT 200"
+    # query = """
+    #     SELECT
+    #         id,
+    #         ticket_number,
+    #         created_at,
+    #         direction,
+    #         job_code_snapshot,
+    #         tax_exempt,
+    #         customer_snapshot,
+    #         truck_number_snapshot,
+    #         material_name_snapshot,
+    #         cost,
+    #         image_url,
+    #         image_status,
+    #         image_error,
+    #         CASE
+    #             WHEN pdf_blob IS NOT NULL OR COALESCE(pdf_path, '') <> '' THEN TRUE
+    #             ELSE FALSE
+    #         END AS has_pdf
+    #     FROM tickets
+    #     WHERE COALESCE(active, TRUE) = TRUE
+    # """
+    # params = []
+    # if ticket_number:
+    #     query += " AND ticket_number ILIKE %s"
+    #     params.append(f"%{ticket_number}%")
+    # if truck:
+    #     query += " AND truck_number_snapshot ILIKE %s"
+    #     params.append(f"%{truck}%")
+    # if job:
+    #     query += " AND job_code_snapshot ILIKE %s"
+    #     params.append(f"%{job}%")
+    # if customer:
+    #     query += " AND customer_snapshot ILIKE %s"
+    #     params.append(f"%{customer}%")
+    # if material:
+    #     query += " AND material_name_snapshot ILIKE %s"
+    #     params.append(f"%{material}%")
+    # if date_from:
+    #     query += " AND date(created_at) >= date(%s)"
+    #     params.append(date_from)
+    # if date_to:
+    #     query += " AND date(created_at) <= date(%s)"
+    #     params.append(date_to)
+    # query += " ORDER BY created_at DESC, id DESC LIMIT 200"
 
-    with db.cursor() as cursor:
-        cursor.execute(query, tuple(params))
-        tickets = cursor.fetchall()
+    # with db.cursor() as cursor:
+    #     cursor.execute(query, tuple(params))
+    #     tickets = cursor.fetchall()
+    tickets = search_tickets_service(
+        db=db,
+        ticket_number=ticket_number,
+        truck=truck,
+        job=job,
+        customer=customer,
+        material=material,
+        date_from=date_from,
+        date_to=date_to
+    )
 
     for ticket in tickets:
         ticket["image_view_url"] = build_ticket_image_view_url(ticket.get("image_url"))

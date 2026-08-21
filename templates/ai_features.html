@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+    <h2>AI Features</h2>
+    <div class="ai-feature-list">
+        <a class="ai-feature-item" href="{{ url_for('ai_assistant') }}">
+            <div>
+                <h3>AI Assistant</h3>
+                <p>Ask questions about tickets, reports, trucks, jobs, and materials.</p>
+            </div>
+            <span class="ai-feature-open" aria-hidden="true">Open</span>
+        </a>
+        <a class="ai-feature-item" href="{{ url_for('material_detection_review') }}">
+            <div>
+                <h3>Material Prediction</h3>
+                <p>Generate material predictions from ticket images and review only mismatches.</p>
+            </div>
+            <span class="ai-feature-open" aria-hidden="true">Open</span>
+        </a>
+    </div>
+</section>
+{% endblock %}

@@ -1,0 +1,207 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+    <h2>Material Detection Review</h2>
+    <form method="get" class="form-grid" id="material-review-filter-form">
+        <label>Start Date
+            <input type="date" name="date_from" value="{{ date_from }}" onchange="this.form.submit()">
+        </label>
+        <label>End Date
+            <input type="date" name="date_to" value="{{ date_to }}" onchange="this.form.submit()">
+        </label>
+        <div class="actions full">
+            <button type="submit">Refresh</button>
+            <button type="submit" form="material-prediction-form">Generate Predictions</button>
+            <button type="submit" form="material-feedback-form">Save Feedback</button>
+        </div>
+    </form>
+    <form method="post" action="{{ url_for('generate_material_detection_predictions') }}" id="material-prediction-form">
+        <input type="hidden" name="date_from" value="{{ date_from }}">
+        <input type="hidden" name="date_to" value="{{ date_to }}">
+    </form>
+</section>
+
+<section class="card">
+    <h3>Summary</h3>
+    <div class="daily-summary-grid">
+        <div class="daily-summary-item"><span>Tickets Found</span><strong>{{ summary.tickets_found or 0 }}</strong></div>
+        <div class="daily-summary-item"><span>Missing Predictions</span><strong>{{ summary.missing_predictions or 0 }}</strong></div>
+        <div class="daily-summary-item"><span>Matches</span><strong>{{ summary.matches or 0 }}</strong></div>
+        <div class="daily-summary-item"><span>Mismatches Pending Review</span><strong>{{ summary.mismatches_pending_review or 0 }}</strong></div>
+        <div class="daily-summary-item"><span>Feedback Completed</span><strong>{{ summary.feedback_completed or 0 }}</strong></div>
+    </div>
+</section>
+
+<form method="post" action="{{ url_for('save_material_detection_feedback') }}" id="material-feedback-form">
+    <input type="hidden" name="date_from" value="{{ date_from }}">
+    <input type="hidden" name="date_to" value="{{ date_to }}">
+    <section class="card">
+        <h3>Pending Material Review</h3>
+        <div class="table-wrap">
+            <table class="edit-tickets-table">
+                <thead>
+                    <tr>
+                        <th>Ticket ID</th>
+                        <th>Ticket Material</th>
+                        <th>Image</th>
+                        <th>Predicted Material</th>
+                        <th>Feedback</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in pending_rows %}
+                    <tr>
+                        <td>
+                            {{ row.ticket_number }}
+                            <input type="hidden" name="ticket_id" value="{{ row.ticket_id }}">
+                        </td>
+                        <td>{{ row.ticket_material }}</td>
+                        <td class="table-actions image-cell">
+                            {% if row.image_view_url %}
+                            <button type="button" class="image-thumb-trigger" data-image-url="{{ row.image_view_url }}" aria-label="View image for ticket {{ row.ticket_number }}">
+                                <img src="{{ row.image_view_url }}" alt="Ticket {{ row.ticket_number }} image" loading="lazy">
+                            </button>
+                            {% else %}
+                            <span>No image</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if row.prediction_status == 'COMPLETED' and row.predicted_label %}
+                                {{ row.predicted_label }}
+                            {% elif row.prediction_status == 'ERROR' %}
+                                <span title="{{ row.error_message }}">Not Generated</span>
+                            {% else %}
+                                Not Generated
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if row.prediction_status == 'COMPLETED' and row.predicted_label %}
+                            <select class="feedback-select" data-ticket-id="{{ row.ticket_id }}" name="feedback_type_{{ row.ticket_id }}">
+                                <option value="">Select feedback</option>
+                                <option value="TICKET_MATERIAL_CORRECT">Ticket material is correct</option>
+                                <option value="PREDICTED_MATERIAL_CORRECT">Predicted material is correct</option>
+                                <option value="NEITHER_CORRECT">Neither is correct</option>
+                            </select>
+                            {% else %}
+                            <span>Generate prediction first.</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="5">No tickets require material review in this date range.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="card" id="correct-material-section" hidden>
+        <h3>Correct Material Required</h3>
+        <div class="table-wrap">
+            <table class="edit-tickets-table">
+                <thead>
+                    <tr>
+                        <th>Ticket ID</th>
+                        <th>Ticket Material</th>
+                        <th>Predicted Material</th>
+                        <th>Correct Material</th>
+                    </tr>
+                </thead>
+                <tbody id="correct-material-rows"></tbody>
+            </table>
+        </div>
+    </section>
+</form>
+
+<template id="correct-material-select-template">
+    <select>
+        <option value="">Select correct material</option>
+        {% for material in materials %}
+        <option value="{{ material.material_name }}">{{ material.material_name }}</option>
+        {% endfor %}
+    </select>
+</template>
+
+<div id="image-lightbox" class="image-lightbox" aria-hidden="true" role="dialog" aria-modal="true" aria-label="Ticket image viewer">
+    <div class="image-lightbox-backdrop" data-close="true"></div>
+    <div class="image-lightbox-panel">
+        <button type="button" class="image-lightbox-close" aria-label="Close image preview">x</button>
+        <img id="image-lightbox-image" src="" alt="Large ticket image preview">
+    </div>
+</div>
+
+<script>
+    (function () {
+        const correctSection = document.getElementById("correct-material-section");
+        const correctRows = document.getElementById("correct-material-rows");
+        const selectTemplate = document.getElementById("correct-material-select-template");
+        const lightbox = document.getElementById("image-lightbox");
+        const lightboxImage = document.getElementById("image-lightbox-image");
+        const lightboxClose = lightbox ? lightbox.querySelector(".image-lightbox-close") : null;
+
+        function openLightbox(imageUrl) {
+            if (!lightbox || !lightboxImage || !imageUrl) return;
+            lightboxImage.src = imageUrl;
+            lightbox.classList.add("is-open");
+            lightbox.setAttribute("aria-hidden", "false");
+        }
+
+        function closeLightbox() {
+            if (!lightbox || !lightboxImage) return;
+            lightbox.classList.remove("is-open");
+            lightbox.setAttribute("aria-hidden", "true");
+            lightboxImage.src = "";
+        }
+
+        function buildCorrectMaterialRows() {
+            const selectedValues = new Map();
+            correctRows.querySelectorAll("select").forEach((select) => {
+                selectedValues.set(select.name, select.value);
+            });
+            correctRows.innerHTML = "";
+
+            const neitherSelections = Array.from(document.querySelectorAll(".feedback-select")).filter((select) => {
+                return select.value === "NEITHER_CORRECT";
+            });
+            correctSection.hidden = neitherSelections.length === 0;
+
+            neitherSelections.forEach((feedbackSelect) => {
+                const ticketId = feedbackSelect.dataset.ticketId;
+                const ticketRow = feedbackSelect.closest("tr");
+                const cells = ticketRow ? ticketRow.cells : [];
+                const row = document.createElement("tr");
+                const ticketCell = document.createElement("td");
+                const materialCell = document.createElement("td");
+                const predictionCell = document.createElement("td");
+                const correctionCell = document.createElement("td");
+                ticketCell.textContent = cells[0] ? cells[0].childNodes[0].textContent.trim() : ticketId;
+                materialCell.textContent = cells[1] ? cells[1].textContent.trim() : "";
+                predictionCell.textContent = cells[3] ? cells[3].textContent.trim() : "";
+
+                const correctSelect = selectTemplate.content.firstElementChild.cloneNode(true);
+                correctSelect.name = "correct_material_" + ticketId;
+                correctSelect.value = selectedValues.get(correctSelect.name) || "";
+                correctionCell.appendChild(correctSelect);
+                row.append(ticketCell, materialCell, predictionCell, correctionCell);
+                correctRows.appendChild(row);
+            });
+        }
+
+        document.querySelectorAll(".feedback-select").forEach((select) => {
+            select.addEventListener("change", buildCorrectMaterialRows);
+        });
+        document.querySelectorAll(".image-thumb-trigger").forEach((trigger) => {
+            trigger.addEventListener("click", () => openLightbox(trigger.dataset.imageUrl || ""));
+        });
+        if (lightboxClose) lightboxClose.addEventListener("click", closeLightbox);
+        if (lightbox) {
+            lightbox.addEventListener("click", (event) => {
+                if (event.target.dataset.close === "true") closeLightbox();
+            });
+        }
+        document.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") closeLightbox();
+        });
+    })();
+</script>
+{% endblock %}

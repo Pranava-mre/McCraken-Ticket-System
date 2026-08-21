@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+    <div class="actions" style="justify-content: space-between;">
+        <h2>AI Assistant</h2>
+        <a href="{{ url_for('ai_features') }}">Back to AI Features</a>
+    </div>
+    <div id="chat-messages" class="chat-messages" aria-live="polite">
+        <div class="chat-message assistant-message">Ask about tickets, reports, trucks, jobs, or materials.</div>
+    </div>
+    <form id="chat-form" class="chat-form">
+        <label class="chat-input-label" for="chat-input">Message</label>
+        <textarea id="chat-input" rows="2" placeholder="Type a question..." required></textarea>
+        <div class="actions">
+            <button type="submit" id="chat-send">Send</button>
+            <span id="chat-status" class="chat-status" hidden>Thinking...</span>
+        </div>
+    </form>
+</section>
+
+<script>
+    (function () {
+        const form = document.getElementById("chat-form");
+        const input = document.getElementById("chat-input");
+        const messages = document.getElementById("chat-messages");
+        const sendButton = document.getElementById("chat-send");
+        const status = document.getElementById("chat-status");
+
+        function addMessage(text, className) {
+            const message = document.createElement("div");
+            message.className = "chat-message " + className;
+            message.textContent = text;
+            messages.appendChild(message);
+            messages.scrollTop = messages.scrollHeight;
+        }
+
+        form.addEventListener("submit", async function (event) {
+            event.preventDefault();
+            const text = input.value.trim();
+            if (!text || sendButton.disabled) return;
+
+            addMessage(text, "user-message");
+            input.value = "";
+            input.disabled = true;
+            sendButton.disabled = true;
+            status.hidden = false;
+
+            try {
+                const response = await fetch("{{ url_for('api_chat') }}", {
+                    method: "POST",
+                    credentials: "same-origin",
+                    headers: {"Content-Type": "application/json", "Accept": "application/json"},
+                    body: JSON.stringify({message: text})
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.error || "The assistant could not process this request.");
+                }
+                addMessage(data.answer || "The assistant returned an empty response.", "assistant-message");
+            } catch (error) {
+                addMessage(error.message || "The assistant could not process this request.", "assistant-message error-message");
+            } finally {
+                input.disabled = false;
+                sendButton.disabled = false;
+                status.hidden = true;
+                input.focus();
+            }
+        });
+
+        input.addEventListener("keydown", function (event) {
+            if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                form.requestSubmit();
+            }
+        });
+    })();
+</script>
+{% endblock %}
