@@ -814,6 +814,12 @@ td {
     font-style: italic;
 }
 
+.nav-user {
+    margin-left: 14px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
 .daily-empty-page {
     padding: 10px;
 }

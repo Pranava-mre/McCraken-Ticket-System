@@ -41,9 +41,9 @@ from reportlab.pdfbase.pdfmetrics import stringWidth
 from psycopg2 import IntegrityError
 from psycopg2.extras import RealDictCursor
 
-
-from ticket_service import search_tickets_service
-from chatbot import process_message
+from services.auth_service import verify_login
+from services.ticket_service import search_tickets_service
+# from chatbot import process_message
 
 
 BlobServiceClient = None
@@ -565,97 +565,8 @@ def get_ticket_image_source_row(db, ticket_id):
         return cursor.fetchone()
 
 
-def get_material_classifier():
-    global _material_model
-
-    with _material_model_lock:
-        if _material_model is not None:
-            return _material_model
-        if not MATERIAL_MODEL_PATH.exists():
-            raise RuntimeError(f"Material model was not found at {MATERIAL_MODEL_PATH}.")
-        try:
-            from ultralytics import YOLO
-        except ImportError as exc:
-            raise RuntimeError("Material detection requires the ultralytics package.") from exc
-        _material_model = YOLO(str(MATERIAL_MODEL_PATH))
-        return _material_model
 
 
-def predict_ticket_material(image_url):
-    if not image_url:
-        raise RuntimeError("Ticket image is not available.")
-
-    response = requests.get(image_url, timeout=60)
-    response.raise_for_status()
-    if not response.content:
-        raise RuntimeError("Ticket image download was empty.")
-
-    temp_path = ""
-    started_at = time.monotonic()
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as temp_file:
-            temp_file.write(response.content)
-            temp_path = temp_file.name
-
-        result = get_material_classifier().predict(temp_path, verbose=False)[0]
-        if result.probs is None:
-            raise RuntimeError("Material model returned no classification probabilities.")
-
-        class_id = int(result.probs.top1)
-        predicted_label = str(result.names[class_id])
-        confidence = float(result.probs.top1conf.item())
-        top5_indices = [int(index) for index in result.probs.top5]
-        top5_confidences = [float(value) for value in result.probs.top5conf]
-        top_k = [
-            {"label": str(result.names[index]), "confidence": confidence_value}
-            for index, confidence_value in zip(top5_indices, top5_confidences)
-        ]
-        return {
-            "predicted_label": predicted_label,
-            "confidence": confidence,
-            "top_k_json": json.dumps(top_k),
-            "raw_output_json": json.dumps({"top1": predicted_label, "top5": top_k}),
-            "inference_ms": round((time.monotonic() - started_at) * 1000),
-        }
-    finally:
-        if temp_path:
-            try:
-                os.remove(temp_path)
-            except OSError:
-                pass
-
-
-def save_material_prediction(db, ticket, prediction=None, error_message=""):
-    image_url = str(ticket.get("image_url") or "").strip()
-    with db.cursor() as cursor:
-        cursor.execute(
-            """
-            INSERT INTO material_predictions (
-                ticket_id, ticket_number, ticket_created_at, material_entry, image_url,
-                predicted_label, top1_confidence, top_k_json, raw_output_json,
-                model_name, model_path, inference_ms, status, error_message, predicted_at, updated_at
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
-            ON CONFLICT (ticket_id) WHERE ticket_id IS NOT NULL DO NOTHING
-            """,
-            (
-                ticket["id"],
-                ticket["ticket_number"],
-                ticket["created_at"],
-                ticket["material_name_snapshot"],
-                image_url,
-                str((prediction or {}).get("predicted_label") or ""),
-                (prediction or {}).get("confidence"),
-                str((prediction or {}).get("top_k_json") or ""),
-                str((prediction or {}).get("raw_output_json") or ""),
-                "YOLO material classifier",
-                str(MATERIAL_MODEL_PATH),
-                (prediction or {}).get("inference_ms"),
-                "COMPLETED" if prediction else "ERROR",
-                error_message,
-            ),
-        )
-        return cursor.rowcount == 1
 
 
 def get_blob_service_client():
@@ -3121,96 +3032,6 @@ def list_materials(db, direction=None):
         return cursor.fetchall()
 
 
-def material_detection_review_data(db, date_from, date_to):
-    base_where = """
-        COALESCE(t.active, TRUE) = TRUE
-        AND date(t.created_at) >= date(%s)
-        AND date(t.created_at) <= date(%s)
-    """
-    with db.cursor() as cursor:
-        cursor.execute(
-            f"""
-            SELECT
-                COUNT(*) AS tickets_found,
-                COUNT(*) FILTER (WHERE p.id IS NULL) AS missing_predictions,
-                COUNT(*) FILTER (
-                    WHERE p.status = 'COMPLETED'
-                      AND LOWER(TRIM(p.predicted_label)) = LOWER(TRIM(t.material_name_snapshot))
-                ) AS matches,
-                COUNT(*) FILTER (
-                    WHERE p.status = 'COMPLETED'
-                      AND LOWER(TRIM(p.predicted_label)) <> LOWER(TRIM(t.material_name_snapshot))
-                      AND f.id IS NULL
-                ) AS mismatches_pending_review,
-                COUNT(*) FILTER (
-                    WHERE p.status = 'COMPLETED'
-                      AND LOWER(TRIM(p.predicted_label)) <> LOWER(TRIM(t.material_name_snapshot))
-                      AND f.id IS NOT NULL
-                ) AS feedback_completed
-            FROM tickets t
-            LEFT JOIN material_predictions p ON p.ticket_id = t.id
-            LEFT JOIN material_prediction_feedback f ON f.prediction_id = p.id
-            WHERE {base_where}
-            """,
-            (date_from, date_to),
-        )
-        summary = cursor.fetchone() or {}
-
-        cursor.execute(
-            f"""
-            SELECT
-                t.id AS ticket_id,
-                t.ticket_number,
-                t.created_at,
-                t.material_name_snapshot AS ticket_material,
-                t.image_url,
-                p.id AS prediction_id,
-                p.predicted_label,
-                p.status AS prediction_status,
-                p.error_message
-            FROM tickets t
-            LEFT JOIN material_predictions p ON p.ticket_id = t.id
-            LEFT JOIN material_prediction_feedback f ON f.prediction_id = p.id
-            WHERE {base_where}
-              AND (
-                  p.id IS NULL
-                  OR p.status <> 'COMPLETED'
-                  OR NULLIF(TRIM(p.predicted_label), '') IS NULL
-                  OR (
-                      LOWER(TRIM(p.predicted_label)) <> LOWER(TRIM(t.material_name_snapshot))
-                      AND f.id IS NULL
-                  )
-              )
-            ORDER BY t.created_at DESC, t.id DESC
-            """,
-            (date_from, date_to),
-        )
-        pending_rows = cursor.fetchall()
-
-    for row in pending_rows:
-        row["image_view_url"] = build_ticket_image_view_url(row.get("image_url"))
-    return summary, pending_rows
-
-
-def get_material_detection_candidate_tickets(db, date_from, date_to):
-    with db.cursor() as cursor:
-        cursor.execute(
-            """
-            SELECT t.id, t.ticket_number, t.created_at, t.material_name_snapshot, t.image_url
-            FROM tickets t
-            WHERE COALESCE(t.active, TRUE) = TRUE
-              AND date(t.created_at) >= date(%s)
-              AND date(t.created_at) <= date(%s)
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM material_predictions p
-                  WHERE p.ticket_id = t.id
-              )
-            ORDER BY t.created_at ASC, t.id ASC
-            """,
-            (date_from, date_to),
-        )
-        return cursor.fetchall()
 
 
 @app.before_request
@@ -3965,29 +3786,77 @@ def api_notifications_decision(notification_id):
     return {"ok": True, "notification": serialize_notification_row(row)}, 200
 
 
+# @app.route("/login", methods=["GET", "POST"])
+# def login():
+#     if session.get("logged_in"):
+#         return redirect(url_for("new_ticket"))
+#     if request.method == "POST":
+#         username = request.form.get("username", "").strip()
+#         password = request.form.get("password", "").strip()
+#         if (
+#             APP_USERNAME
+#             and APP_PASSWORD
+#             and hmac.compare_digest(username, APP_USERNAME)
+#             and hmac.compare_digest(password, APP_PASSWORD)
+#         ):
+#             session["logged_in"] = True
+#             session.permanent = True
+#             next_url = request.args.get("next") or url_for("new_ticket")
+#             parsed_next = urlparse(next_url)
+#             if parsed_next.netloc:
+#                 next_url = url_for("new_ticket")
+#             return redirect(next_url)
+#         flash("Invalid username or password.", "error")
+#     return render_template("login.html")
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if session.get("logged_in"):
         return redirect(url_for("new_ticket"))
+
     if request.method == "POST":
         username = request.form.get("username", "").strip()
-        password = request.form.get("password", "").strip()
-        if (
-            APP_USERNAME
-            and APP_PASSWORD
-            and hmac.compare_digest(username, APP_USERNAME)
-            and hmac.compare_digest(password, APP_PASSWORD)
-        ):
-            session["logged_in"] = True
-            session.permanent = True
-            next_url = request.args.get("next") or url_for("new_ticket")
-            parsed_next = urlparse(next_url)
-            if parsed_next.netloc:
-                next_url = url_for("new_ticket")
-            return redirect(next_url)
-        flash("Invalid username or password.", "error")
-    return render_template("login.html")
+        password = request.form.get("password", "")
 
+        db = None
+
+        try:
+            db = create_db_connection()
+
+            user = verify_login(
+                db,
+                username,
+                password
+            )
+
+            if user:
+                session.clear()
+
+                session["logged_in"] = True
+                session["user_id"] = user["id"]
+                session["username"] = user["username"]
+                session["role"] = user["role"]
+                session.permanent = True
+
+                next_url = request.args.get("next") or url_for("new_ticket")
+                parsed_next = urlparse(next_url)
+
+                if parsed_next.netloc:
+                    next_url = url_for("new_ticket")
+
+                return redirect(next_url)
+
+            flash("Invalid username or password.", "error")
+
+        except Exception:
+            app.logger.exception("Login failed.")
+            flash("Unable to log in at this time.", "error")
+
+        finally:
+            if db is not None:
+                db.close()
+
+    return render_template("login.html")
 
 @app.post("/logout")
 def logout():
@@ -4011,6 +3880,8 @@ def new_ticket():
     created_ticket_id = None
 
     if request.method == "POST":
+        created_by_user_id = session.get("user_id")
+        created_by = session.get("username", "")
         direction = request.form.get("direction", "IN").strip().upper()
         job_id = request.form.get("job_id", "").strip()
         job_entry = request.form.get("job_entry", "").strip()
@@ -4025,6 +3896,9 @@ def new_ticket():
         auto_print = request.form.get("auto_print") == "on"
         use_now = request.form.get("use_now") == "on"
         custom_datetime = request.form.get("custom_datetime")
+        if not created_by_user_id or not created_by:
+            flash("Your login session is missing user information. Please log in again.", "error")
+            return redirect(url_for("login"))
 
         if direction not in {"IN", "OUT"}:
             flash("Direction must be IN or OUT.", "error")
@@ -4146,8 +4020,9 @@ def new_ticket():
                 INSERT INTO tickets (
                     ticket_number, ticket_year, ticket_sequence, direction, created_at,
                     job_id, job_code_snapshot, job_name_snapshot, tax_exempt, customer_snapshot, truck_id, truck_number_snapshot,
-                    material_id, material_name_snapshot, quantity, unit, cost, notes, pdf_path, pdf_blob
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    material_id, material_name_snapshot, quantity, unit, cost, notes, pdf_path, pdf_blob,
+                    created_by_user_id, created_by
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -4171,6 +4046,8 @@ def new_ticket():
                     notes,
                     pdf_path,
                     pdf_bytes,
+                    created_by_user_id,
+                    created_by,
                 ),
                 )
                 inserted_ticket = cursor.fetchone()
@@ -4373,21 +4250,7 @@ def jobs_search():
     return {"jobs": payload}
 
 
-def material_review_date_range():
-    today = app_now().date()
-    date_from = str(request.values.get("date_from") or "").strip()
-    date_to = str(request.values.get("date_to") or "").strip()
-    try:
-        start_date = datetime.fromisoformat(date_from).date() if date_from else today - timedelta(days=3)
-    except ValueError:
-        start_date = today - timedelta(days=3)
-    try:
-        end_date = datetime.fromisoformat(date_to).date() if date_to else today
-    except ValueError:
-        end_date = today
-    if start_date > end_date:
-        start_date, end_date = end_date, start_date
-    return start_date.isoformat(), end_date.isoformat()
+
 
 
 @app.get("/ai-features")
@@ -4395,78 +4258,279 @@ def ai_features():
     return render_template("ai_features.html")
 
 
-@app.get("/ai-assistant")
-def ai_assistant():
-    return render_template("ai_assistant.html")
+# @app.get("/ai-assistant")
+# def ai_assistant():
+#     return render_template("ai_assistant.html")
 
 
-@app.post("/api/chat")
-def api_chat():
-    payload = request.get_json(silent=True) or {}
-    message = str(payload.get("message") or "").strip()
-    if not message:
-        return {"error": "message is required."}, 400
+# @app.post("/api/chat")
+# def api_chat():
+#     payload = request.get_json(silent=True) or {}
+#     message = str(payload.get("message") or "").strip()
+#     if not message:
+#         return {"error": "message is required."}, 400
 
-    try:
-        answer = asyncio.run(process_message(message))
-    except Exception as exc:
-        app.logger.exception("AI assistant request failed.")
-        return {"error": f"AI assistant request failed: {exc}"}, 500
-    return {"answer": answer}, 200
-
-
-@app.get("/material-detection-review")
-def material_detection_review():
-    db = get_db()
-    date_from, date_to = material_review_date_range()
-    summary, pending_rows = material_detection_review_data(db, date_from, date_to)
-    return render_template(
-        "material_detection_review.html",
-        date_from=date_from,
-        date_to=date_to,
-        summary=summary,
-        pending_rows=pending_rows,
-        materials=list_materials(db),
-    )
+#     try:
+#         answer = asyncio.run(process_message(message))
+#     except Exception as exc:
+#         app.logger.exception("AI assistant request failed.")
+#         return {"error": f"AI assistant request failed: {exc}"}, 500
+#     return {"answer": answer}, 200
 
 
-@app.post("/material-detection-review/generate")
-def generate_material_detection_predictions():
-    db = get_db()
-    date_from, date_to = material_review_date_range()
-    candidates = get_material_detection_candidate_tickets(db, date_from, date_to)
-    generated_count = 0
-    error_count = 0
+# def material_detection_review_data(db, date_from, date_to):
+#     base_where = """
+#         COALESCE(t.active, TRUE) = TRUE
+#         AND date(t.created_at) >= date(%s)
+#         AND date(t.created_at) <= date(%s)
+#     """
+#     with db.cursor() as cursor:
+#         cursor.execute(
+#             f"""
+#             SELECT
+#                 COUNT(*) AS tickets_found,
+#                 COUNT(*) FILTER (WHERE p.id IS NULL) AS missing_predictions,
+#                 COUNT(*) FILTER (
+#                     WHERE p.status = 'COMPLETED'
+#                       AND LOWER(TRIM(p.predicted_label)) = LOWER(TRIM(t.material_name_snapshot))
+#                 ) AS matches,
+#                 COUNT(*) FILTER (
+#                     WHERE p.status = 'COMPLETED'
+#                       AND LOWER(TRIM(p.predicted_label)) <> LOWER(TRIM(t.material_name_snapshot))
+#                       AND f.id IS NULL
+#                 ) AS mismatches_pending_review,
+#                 COUNT(*) FILTER (
+#                     WHERE p.status = 'COMPLETED'
+#                       AND LOWER(TRIM(p.predicted_label)) <> LOWER(TRIM(t.material_name_snapshot))
+#                       AND f.id IS NOT NULL
+#                 ) AS feedback_completed
+#             FROM tickets t
+#             LEFT JOIN material_predictions p ON p.ticket_id = t.id
+#             LEFT JOIN material_prediction_feedback f ON f.prediction_id = p.id
+#             WHERE {base_where}
+#             """,
+#             (date_from, date_to),
+#         )
+#         summary = cursor.fetchone() or {}
 
-    try:
-        for ticket in candidates:
-            image_url = build_ticket_image_view_url(ticket.get("image_url"))
-            try:
-                prediction = predict_ticket_material(image_url)
-                saved = save_material_prediction(db, ticket, prediction=prediction)
-                generated_count += int(saved)
-            except Exception as exc:
-                saved = save_material_prediction(db, ticket, error_message=str(exc))
-                error_count += int(saved)
-        db.commit()
-    except Exception as exc:
-        db.rollback()
-        flash(f"Could not save material predictions: {exc}", "error")
-        return redirect(url_for("material_detection_review", date_from=date_from, date_to=date_to))
+#         cursor.execute(
+#             f"""
+#             SELECT
+#                 t.id AS ticket_id,
+#                 t.ticket_number,
+#                 t.created_at,
+#                 t.material_name_snapshot AS ticket_material,
+#                 t.image_url,
+#                 p.id AS prediction_id,
+#                 p.predicted_label,
+#                 p.status AS prediction_status,
+#                 p.error_message
+#             FROM tickets t
+#             LEFT JOIN material_predictions p ON p.ticket_id = t.id
+#             LEFT JOIN material_prediction_feedback f ON f.prediction_id = p.id
+#             WHERE {base_where}
+#               AND (
+#                   p.id IS NULL
+#                   OR p.status <> 'COMPLETED'
+#                   OR NULLIF(TRIM(p.predicted_label), '') IS NULL
+#                   OR (
+#                       LOWER(TRIM(p.predicted_label)) <> LOWER(TRIM(t.material_name_snapshot))
+#                       AND f.id IS NULL
+#                   )
+#               )
+#             ORDER BY t.created_at DESC, t.id DESC
+#             """,
+#             (date_from, date_to),
+#         )
+#         pending_rows = cursor.fetchall()
 
-    if not candidates:
-        flash("No tickets without predictions were found in this date range.", "success")
-    else:
-        flash(
-            f"Saved {generated_count} material prediction(s). "
-            f"{error_count} ticket(s) were recorded with prediction errors.",
-            "success" if error_count == 0 else "error",
-        )
-    return redirect(url_for("material_detection_review", date_from=date_from, date_to=date_to))
+#     for row in pending_rows:
+#         row["image_view_url"] = build_ticket_image_view_url(row.get("image_url"))
+#     return summary, pending_rows
 
 
-@app.post("/material-detection-review/feedback")
-def save_material_detection_feedback():
+# def get_material_detection_candidate_tickets(db, date_from, date_to):
+#     with db.cursor() as cursor:
+#         cursor.execute(
+#             """
+#             SELECT t.id, t.ticket_number, t.created_at, t.material_name_snapshot, t.image_url
+#             FROM tickets t
+#             WHERE COALESCE(t.active, TRUE) = TRUE
+#               AND date(t.created_at) >= date(%s)
+#               AND date(t.created_at) <= date(%s)
+#               AND NOT EXISTS (
+#                   SELECT 1
+#                   FROM material_predictions p
+#                   WHERE p.ticket_id = t.id
+#               )
+#             ORDER BY t.created_at ASC, t.id ASC
+#             """,
+#             (date_from, date_to),
+#         )
+#         return cursor.fetchall()
+
+# def material_review_date_range():
+#     today = app_now().date()
+#     date_from = str(request.values.get("date_from") or "").strip()
+#     date_to = str(request.values.get("date_to") or "").strip()
+#     try:
+#         start_date = datetime.fromisoformat(date_from).date() if date_from else today - timedelta(days=3)
+#     except ValueError:
+#         start_date = today - timedelta(days=3)
+#     try:
+#         end_date = datetime.fromisoformat(date_to).date() if date_to else today
+#     except ValueError:
+#         end_date = today
+#     if start_date > end_date:
+#         start_date, end_date = end_date, start_date
+#     return start_date.isoformat(), end_date.isoformat()
+
+
+# def get_material_classifier():
+#     global _material_model
+
+#     with _material_model_lock:
+#         if _material_model is not None:
+#             return _material_model
+#         if not MATERIAL_MODEL_PATH.exists():
+#             raise RuntimeError(f"Material model was not found at {MATERIAL_MODEL_PATH}.")
+#         try:
+#             from ultralytics import YOLO
+#         except ImportError as exc:
+#             raise RuntimeError("Material detection requires the ultralytics package.") from exc
+#         _material_model = YOLO(str(MATERIAL_MODEL_PATH))
+#         return _material_model
+
+
+# def predict_ticket_material(image_url):
+#     if not image_url:
+#         raise RuntimeError("Ticket image is not available.")
+
+#     response = requests.get(image_url, timeout=60)
+#     response.raise_for_status()
+#     if not response.content:
+#         raise RuntimeError("Ticket image download was empty.")
+
+#     temp_path = ""
+#     started_at = time.monotonic()
+#     try:
+#         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as temp_file:
+#             temp_file.write(response.content)
+#             temp_path = temp_file.name
+
+#         result = get_material_classifier().predict(temp_path, verbose=False)[0]
+#         if result.probs is None:
+#             raise RuntimeError("Material model returned no classification probabilities.")
+
+#         class_id = int(result.probs.top1)
+#         predicted_label = str(result.names[class_id])
+#         confidence = float(result.probs.top1conf.item())
+#         top5_indices = [int(index) for index in result.probs.top5]
+#         top5_confidences = [float(value) for value in result.probs.top5conf]
+#         top_k = [
+#             {"label": str(result.names[index]), "confidence": confidence_value}
+#             for index, confidence_value in zip(top5_indices, top5_confidences)
+#         ]
+#         return {
+#             "predicted_label": predicted_label,
+#             "confidence": confidence,
+#             "top_k_json": json.dumps(top_k),
+#             "raw_output_json": json.dumps({"top1": predicted_label, "top5": top_k}),
+#             "inference_ms": round((time.monotonic() - started_at) * 1000),
+#         }
+#     finally:
+#         if temp_path:
+#             try:
+#                 os.remove(temp_path)
+#             except OSError:
+#                 pass
+
+
+# def save_material_prediction(db, ticket, prediction=None, error_message=""):
+#     image_url = str(ticket.get("image_url") or "").strip()
+#     with db.cursor() as cursor:
+#         cursor.execute(
+#             """
+#             INSERT INTO material_predictions (
+#                 ticket_id, ticket_number, ticket_created_at, material_entry, image_url,
+#                 predicted_label, top1_confidence, top_k_json, raw_output_json,
+#                 model_name, model_path, inference_ms, status, error_message, predicted_at, updated_at
+#             )
+#             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+#             ON CONFLICT (ticket_id) WHERE ticket_id IS NOT NULL DO NOTHING
+#             """,
+#             (
+#                 ticket["id"],
+#                 ticket["ticket_number"],
+#                 ticket["created_at"],
+#                 ticket["material_name_snapshot"],
+#                 image_url,
+#                 str((prediction or {}).get("predicted_label") or ""),
+#                 (prediction or {}).get("confidence"),
+#                 str((prediction or {}).get("top_k_json") or ""),
+#                 str((prediction or {}).get("raw_output_json") or ""),
+#                 "YOLO material classifier",
+#                 str(MATERIAL_MODEL_PATH),
+#                 (prediction or {}).get("inference_ms"),
+#                 "COMPLETED" if prediction else "ERROR",
+#                 error_message,
+#             ),
+#         )
+#         return cursor.rowcount == 1
+
+
+# @app.get("/material-detection-review")
+# def material_detection_review():
+#     db = get_db()
+#     date_from, date_to = material_review_date_range()
+#     summary, pending_rows = material_detection_review_data(db, date_from, date_to)
+#     return render_template(
+#         "material_detection_review.html",
+#         date_from=date_from,
+#         date_to=date_to,
+#         summary=summary,
+#         pending_rows=pending_rows,
+#         materials=list_materials(db),
+#     )
+
+
+# @app.post("/material-detection-review/generate")
+# def generate_material_detection_predictions():
+#     db = get_db()
+#     date_from, date_to = material_review_date_range()
+#     candidates = get_material_detection_candidate_tickets(db, date_from, date_to)
+#     generated_count = 0
+#     error_count = 0
+
+#     try:
+#         for ticket in candidates:
+#             image_url = build_ticket_image_view_url(ticket.get("image_url"))
+#             try:
+#                 prediction = predict_ticket_material(image_url)
+#                 saved = save_material_prediction(db, ticket, prediction=prediction)
+#                 generated_count += int(saved)
+#             except Exception as exc:
+#                 saved = save_material_prediction(db, ticket, error_message=str(exc))
+#                 error_count += int(saved)
+#         db.commit()
+#     except Exception as exc:
+#         db.rollback()
+#         flash(f"Could not save material predictions: {exc}", "error")
+#         return redirect(url_for("material_detection_review", date_from=date_from, date_to=date_to))
+
+#     if not candidates:
+#         flash("No tickets without predictions were found in this date range.", "success")
+#     else:
+#         flash(
+#             f"Saved {generated_count} material prediction(s). "
+#             f"{error_count} ticket(s) were recorded with prediction errors.",
+#             "success" if error_count == 0 else "error",
+#         )
+#     return redirect(url_for("material_detection_review", date_from=date_from, date_to=date_to))
+
+
+# @app.post("/material-detection-review/feedback")
+# def save_material_detection_feedback():
     db = get_db()
     date_from, date_to = material_review_date_range()
     feedback_types = {
@@ -6239,6 +6303,8 @@ def rfid_import_tags():
 @app.post("/rfid/mappings/assign")
 def rfid_assign_mapping():
     db = get_db()
+    created_by_user_id = session.get("user_id")
+    created_by = session.get("username", "")
     serial_number = normalize_serial_number(request.form.get("serial_number"))
     truck_id_raw = str(request.form.get("truck_id") or "").strip()
     notes = str(request.form.get("notes") or "").strip()
@@ -6266,10 +6332,10 @@ def rfid_assign_mapping():
 
         cursor.execute(
             """
-            INSERT INTO rfid_truck_tag_assignment (serial_number, truck_id, notes, assigned_at, updated_at)
-            VALUES (%s, %s, %s, NOW(), NOW())
+            INSERT INTO rfid_truck_tag_assignment (serial_number, truck_id, notes, assigned_at, updated_at, created_by_user_id, created_by)
+            VALUES (%s, %s, %s, NOW(), NOW(), %s, %s)
             """,
-            (serial_number, truck_id, notes),
+            (serial_number, truck_id, notes, created_by_user_id, created_by),
         )
 
     sync_epc_map_for_assignment(db, serial_number)
@@ -6381,11 +6447,16 @@ def void_ticket(ticket_id):
 def admin_trucks():
     db = get_db()
     if request.method == "POST":
+        created_by_user_id = session.get("user_id")
+        created_by = session.get("username", "")
         truck_number = request.form.get("truck_number", "").strip()
         description = request.form.get("description", "").strip()
         truck_size = request.form.get("truck_size", "").strip()
         hauled_by = request.form.get("hauled_by", "").strip()
         license_plate = request.form.get("license_plate", "").strip()
+        if not created_by_user_id or not created_by:
+            flash("Your login session is missing user information. Please log in again.", "error")
+            return redirect(url_for("login"))
         if not truck_number:
             flash("Truck number is required.", "error")
             return redirect(url_for("admin_trucks"))
@@ -6393,8 +6464,8 @@ def admin_trucks():
             active_value = True if is_active_column_boolean(db, "trucks_main") else 1
             with db.cursor() as cursor:
                 cursor.execute(
-                    "INSERT INTO trucks_main (truck_number, notes, truck_size, trucking_company, license_plate, active) VALUES (%s, %s, %s, %s, %s, %s)",
-                    (truck_number, description, truck_size, hauled_by, license_plate, active_value),
+                    "INSERT INTO trucks_main (truck_number, notes, truck_size, trucking_company, license_plate, active, created_by, created_by_user_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                    (truck_number, description, truck_size, hauled_by, license_plate, active_value, created_by, created_by_user_id),
                 )
             db.commit()
             flash("Truck added.", "success")
@@ -6502,6 +6573,8 @@ def edit_trucks():
 def save_truck_edit(truck_id):
     db = get_db()
     truck_query = request.form.get("q", "").strip()
+    updated_by_user_id = session.get("user_id")
+    updated_by = session.get("username")
 
     truck_number = request.form.get("truck_number", "").strip()
     description = request.form.get("description", "").strip()
@@ -6530,10 +6603,12 @@ def save_truck_edit(truck_id):
                     truck_size = %s,
                     trucking_company = %s,
                     license_plate = %s,
-                    active = %s
+                    active = %s,
+                    updated_by = %s,
+                    updated_by_user_id = %s
                 WHERE id = %s
                 """,
-                (truck_number, description, truck_size, hauled_by, license_plate, active_value, truck_id),
+                (truck_number, description, truck_size, hauled_by, license_plate, active_value, updated_by, updated_by_user_id, truck_id),
             )
             if cursor.rowcount == 0:
                 db.rollback()

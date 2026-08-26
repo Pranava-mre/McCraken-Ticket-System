@@ -56,6 +56,22 @@
 | 6 | `active` | `integer` | NO | `1` |
 | 7 | `created_at` | `text` | NO | `` |
 
+## Table: `public.material_prediction_feedback`
+
+### Schema
+
+| # | Column | Data Type | Nullable | Default |
+| --- | --- | --- | --- | --- |
+| 1 | `id` | `bigint` | NO | `nextval('material_prediction_feedback_id_seq'::regclass)` |
+| 2 | `prediction_id` | `bigint` | NO | `` |
+| 3 | `ticket_id` | `bigint` | NO | `` |
+| 4 | `ticket_material` | `text` | NO | `` |
+| 5 | `predicted_material` | `text` | NO | `` |
+| 6 | `feedback_type` | `text` | NO | `` |
+| 7 | `correct_material` | `text` | YES | `` |
+| 8 | `feedback_given_at` | `timestamp with time zone` | NO | `now()` |
+| 9 | `feedback_given_by` | `text` | NO | `''::text` |
+
 ## Table: `public.material_predictions`
 
 ### Schema
@@ -80,22 +96,6 @@
 | 16 | `updated_at` | `timestamp with time zone` | NO | `now()` |
 | 17 | `ticket_id` | `bigint` | YES | `` |
 | 18 | `predicted_at` | `timestamp with time zone` | NO | `now()` |
-
-## Table: `public.material_prediction_feedback`
-
-### Schema
-
-| # | Column | Data Type | Nullable | Default |
-| --- | --- | --- | --- | --- |
-| 1 | `id` | `bigint` | NO | `nextval('material_prediction_feedback_id_seq'::regclass)` |
-| 2 | `prediction_id` | `bigint` | NO | `` |
-| 3 | `ticket_id` | `bigint` | NO | `` |
-| 4 | `ticket_material` | `text` | NO | `` |
-| 5 | `predicted_material` | `text` | NO | `` |
-| 6 | `feedback_type` | `text` | NO | `` |
-| 7 | `correct_material` | `text` | YES | `` |
-| 8 | `feedback_given_at` | `timestamp with time zone` | NO | `now()` |
-| 9 | `feedback_given_by` | `text` | NO | `''::text` |
 
 ## Table: `public.material_price`
 
@@ -279,4 +279,8 @@
 | 6 | `phone` | `text` | YES | `` |
 | 7 | `license_plate` | `text` | YES | `` |
 | 8 | `active` | `boolean` | NO | `true` |
+| 9 | `created_by` | `text` | YES | `` |
+| 10 | `created_by_user_id` | `bigint` | YES | `` |
+| 11 | `updated_by_user_id` | `bigint` | YES | `` |
+| 12 | `updated_by` | `text` | YES | `` |
 

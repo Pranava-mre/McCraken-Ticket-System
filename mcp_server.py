@@ -1,7 +1,8 @@
 from mcp.server import MCPServer
 
-from app import create_db_connection
-from ticket_service import search_tickets_service
+from services.db_service import create_db_connection
+from services.manual_search_service import search_manual_service
+from services.ticket_service import search_tickets_service
 
 
 mcp = MCPServer(
@@ -64,6 +65,42 @@ def search_ticket(
         "tickets": cleaned_tickets
     }
 
+
+@mcp.tool()
+def search_user_guide(
+    query: str
+):
+    """
+    Search the McCracken Window Ticket user manual.
+
+    Use this tool for questions about how to use the
+    ticketing system.
+
+    Examples include:
+
+    creating tickets
+    editing tickets
+    voiding tickets
+    printing tickets
+    searching tickets
+    adding trucks
+    customers
+    materials
+    jobs
+    direction IN or OUT
+    reports
+    daily reports
+    ticket procedures
+    system instructions
+    troubleshooting
+
+    This tool does not return live ticket data.
+    """
+
+    return search_manual_service(
+        query=query,
+        limit=3
+    )
 
 if __name__ == "__main__":
     mcp.run()

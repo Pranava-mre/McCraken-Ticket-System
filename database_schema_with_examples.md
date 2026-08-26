@@ -60,8 +60,8 @@
 
 | id | job_code | job_name | customer | active | source_updated_at | refreshed_at | tax_exempt |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 2627 | 6667 | Alcosan N.End Plant Exp (6667) | Mascaro Construction Co., LP | 1 | NULL | 2026-08-18T13:28:59-04:00 | Y |
-| 2732 | 6857 | Waltco Parking Lot (6857) | Redcon, LLC | 1 | NULL | 2026-08-18T13:28:59-04:00 | N |
+| 2627 | 6667 | Alcosan N.End Plant Exp (6667) | Mascaro Construction Co., LP | 1 | NULL | 2026-08-26T10:41:50-04:00 | Y |
+| 2732 | 6857 | Waltco Parking Lot (6857) | Redcon, LLC | 1 | NULL | 2026-08-26T10:41:50-04:00 | N |
 
 ## Table: `public.manual_jobs`
 
@@ -83,6 +83,29 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | wendys job | wendys job |  | New | 1 | 2026-04-10T10:15:56 |
 | 2 | new job 54 | new job 54 |  | New | 1 | 2026-04-10T10:20:21 |
+
+## Table: `public.material_prediction_feedback`
+
+### Schema
+
+| # | Column | Data Type | Nullable | Default |
+| --- | --- | --- | --- | --- |
+| 1 | `id` | `bigint` | NO | `nextval('material_prediction_feedback_id_seq'::regclass)` |
+| 2 | `prediction_id` | `bigint` | NO | `` |
+| 3 | `ticket_id` | `bigint` | NO | `` |
+| 4 | `ticket_material` | `text` | NO | `` |
+| 5 | `predicted_material` | `text` | NO | `` |
+| 6 | `feedback_type` | `text` | NO | `` |
+| 7 | `correct_material` | `text` | YES | `` |
+| 8 | `feedback_given_at` | `timestamp with time zone` | NO | `now()` |
+| 9 | `feedback_given_by` | `text` | NO | `''::text` |
+
+### Example Data
+
+| id | prediction_id | ticket_id | ticket_material | predicted_material | feedback_type | correct_material | feedback_given_at | feedback_given_by |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 260 | 17559 | #304 Recycled Concrete | Broken Concrete | TICKET_MATERIAL_CORRECT | NULL | 2026-08-20 17:00:57.885798+00:00 |  |
+| 2 | 255 | 17554 | Other Clean Hard Fill (rubble & mixed material) | Broken Concrete | TICKET_MATERIAL_CORRECT | NULL | 2026-08-20 17:07:31.371660+00:00 |  |
 
 ## Table: `public.material_predictions`
 
@@ -106,13 +129,15 @@
 | 14 | `error_message` | `text` | NO | `''::text` |
 | 15 | `created_at` | `timestamp with time zone` | NO | `now()` |
 | 16 | `updated_at` | `timestamp with time zone` | NO | `now()` |
+| 17 | `ticket_id` | `bigint` | YES | `` |
+| 18 | `predicted_at` | `timestamp with time zone` | NO | `now()` |
 
 ### Example Data
 
-| id | ticket_number | ticket_created_at | material_entry | image_url | predicted_label | top1_confidence | top_k_json | raw_output_json | model_name | model_path | inference_ms | status | error_message | created_at | updated_at |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | DT-2026-011750 | 2026-07-01T15:14:38-04:00 | Other Clean Hard Fill (rubble & mixed material) | https://mccrakentktsys.blob.core.windows.net/ticket-pdfs/ticket-images/2026/Other_Clean_Hard_Fill__rubble___mixed_material_/DT-2026-011750_2026-07-01T15_14_38-04_00.jpg | Broken Concrete | 0.720031 | [{"class_id": 1, "label": "Broken Concrete", "confidence": 0.7200310230255127}, {"class_id": 2, "label": "Other Clean Hard Fill (rubble & mixed material)", "confidence": 0.14176788926124573}, {"class_id": 0, "label": "Broken Asphalt (or material mixed asphalt)", "confidence": 0.10921935737133026}, {"class_id": 3, "label": "Slop", "confidence": 0.028981683775782585}] | {"top1": {"class_id": 1, "label": "Broken Concrete", "confidence": 0.7200310230255127}, "top_k": [{"class_id": 1, "label": "Broken Concrete", "confidence": 0.7200310230255127}, {"class_id": 2, "label": "Other Clean Hard Fill (rubble & mixed material)", "confidence": 0.14176788926124573}, {"class_id": 0, "label": "Broken Asphalt (or material mixed asphalt)", "confidence": 0.10921935737133026}, {"class_id": 3, "label": "Slop", "confidence": 0.028981683775782585}]} | ultralytics-yolo-classify | C:\Users\pstanam.MRX\Downloads\OneDrive_2026-02-23\McCraken Ticket System\runs\classify\material_model_runs\starter_classifier-2\weights\best.pt | 126 | READY |  | 2026-07-01 19:16:05.396741+00:00 | 2026-07-01 19:16:05.396741+00:00 |
-| 2 | DT-2026-011749 | 2026-07-01T15:10:13-04:00 | Other Clean Hard Fill (rubble & mixed material) | https://mccrakentktsys.blob.core.windows.net/ticket-pdfs/ticket-images/2026/Other_Clean_Hard_Fill__rubble___mixed_material_/DT-2026-011749_2026-07-01T15_10_13-04_00.jpg | Broken Concrete | 0.44464794 | [{"class_id": 1, "label": "Broken Concrete", "confidence": 0.4446479380130768}, {"class_id": 0, "label": "Broken Asphalt (or material mixed asphalt)", "confidence": 0.43059802055358887}, {"class_id": 3, "label": "Slop", "confidence": 0.09864236414432526}, {"class_id": 2, "label": "Other Clean Hard Fill (rubble & mixed material)", "confidence": 0.026111697778105736}] | {"top1": {"class_id": 1, "label": "Broken Concrete", "confidence": 0.4446479380130768}, "top_k": [{"class_id": 1, "label": "Broken Concrete", "confidence": 0.4446479380130768}, {"class_id": 0, "label": "Broken Asphalt (or material mixed asphalt)", "confidence": 0.43059802055358887}, {"class_id": 3, "label": "Slop", "confidence": 0.09864236414432526}, {"class_id": 2, "label": "Other Clean Hard Fill (rubble & mixed material)", "confidence": 0.026111697778105736}]} | ultralytics-yolo-classify | C:\Users\pstanam.MRX\Downloads\OneDrive_2026-02-23\McCraken Ticket System\runs\classify\material_model_runs\starter_classifier-2\weights\best.pt | 11 | READY |  | 2026-07-01 19:16:05.396741+00:00 | 2026-07-01 19:16:05.396741+00:00 |
+| id | ticket_number | ticket_created_at | material_entry | image_url | predicted_label | top1_confidence | top_k_json | raw_output_json | model_name | model_path | inference_ms | status | error_message | created_at | updated_at | ticket_id | predicted_at |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 183 | DT-2026-014810 | 2026-08-20T06:58:58-04:00 | Bulk Sand (pre-screened) OUT | https://mccrakentktsys.blob.core.windows.net/ticket-pdfs/ticket-images/2026/Bulk_Sand__pre-screened__OUT/DT-2026-014810_2026-08-20T06_58_58-04_00.jpg | Broken Concrete | 0.8789611 | [{"label": "Broken Concrete", "confidence": 0.8789610862731934}, {"label": "Other Clean Hard Fill (rubble & mixed material)", "confidence": 0.10446440428495407}, {"label": "Broken Asphalt (or material mixed asphalt)", "confidence": 0.015569521114230156}, {"label": "Slop", "confidence": 0.0010049438569694757}] | {"top1": "Broken Concrete", "top5": [{"label": "Broken Concrete", "confidence": 0.8789610862731934}, {"label": "Other Clean Hard Fill (rubble & mixed material)", "confidence": 0.10446440428495407}, {"label": "Broken Asphalt (or material mixed asphalt)", "confidence": 0.015569521114230156}, {"label": "Slop", "confidence": 0.0010049438569694757}]} | YOLO material classifier | C:\Users\pstanam.MRX\Downloads\OneDrive_2026-02-23\McCraken Ticket System\runs\classify\material_model_runs\starter_classifier-2\weights\best.pt | 8773 | COMPLETED |  | 2026-08-20 16:58:12.293321+00:00 | 2026-08-20 16:58:12.293321+00:00 | 17482 | 2026-08-20 16:58:12.293321+00:00 |
+| 184 | DT-2026-014811 | 2026-08-20T07:01:28-04:00 | Bulk Sand (pre-screened) OUT | https://mccrakentktsys.blob.core.windows.net/ticket-pdfs/ticket-images/2026/Bulk_Sand__pre-screened__OUT/DT-2026-014811_2026-08-20T07_01_28-04_00.jpg | Broken Concrete | 0.82334286 | [{"label": "Broken Concrete", "confidence": 0.8233428597450256}, {"label": "Other Clean Hard Fill (rubble & mixed material)", "confidence": 0.13249114155769348}, {"label": "Broken Asphalt (or material mixed asphalt)", "confidence": 0.035166915506124496}, {"label": "Slop", "confidence": 0.008999052457511425}] | {"top1": "Broken Concrete", "top5": [{"label": "Broken Concrete", "confidence": 0.8233428597450256}, {"label": "Other Clean Hard Fill (rubble & mixed material)", "confidence": 0.13249114155769348}, {"label": "Broken Asphalt (or material mixed asphalt)", "confidence": 0.035166915506124496}, {"label": "Slop", "confidence": 0.008999052457511425}]} | YOLO material classifier | C:\Users\pstanam.MRX\Downloads\OneDrive_2026-02-23\McCraken Ticket System\runs\classify\material_model_runs\starter_classifier-2\weights\best.pt | 21 | COMPLETED |  | 2026-08-20 16:58:12.293321+00:00 | 2026-08-20 16:58:12.293321+00:00 | 17483 | 2026-08-20 16:58:12.293321+00:00 |
 
 ## Table: `public.material_price`
 
@@ -277,7 +302,7 @@ No example data available.
 
 | ticket_year | last_value |
 | --- | --- |
-| 2026 | 14802 |
+| 2026 | 15199 |
 
 ## Table: `public.tickets`
 
@@ -359,11 +384,15 @@ No example data available.
 | 6 | `phone` | `text` | YES | `` |
 | 7 | `license_plate` | `text` | YES | `` |
 | 8 | `active` | `boolean` | NO | `true` |
+| 9 | `created_by` | `text` | YES | `` |
+| 10 | `created_by_user_id` | `bigint` | YES | `` |
+| 11 | `updated_by_user_id` | `bigint` | YES | `` |
+| 12 | `updated_by` | `text` | YES | `` |
 
 ### Example Data
 
-| id | truck_number | trucking_company | notes | truck_size | phone | license_plate | active |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 205 | MIKE108 | Legacy Data (Unknown Hauler) | NULL | TriAxle | NULL | NULL | True |
-| 206 | POND15 | Legacy Data (Unknown Hauler) | NULL | Tandem | NULL | NULL | True |
+| id | truck_number | trucking_company | notes | truck_size | phone | license_plate | active | created_by | created_by_user_id | updated_by_user_id | updated_by |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 205 | MIKE108 | Legacy Data (Unknown Hauler) | NULL | TriAxle | NULL | NULL | True | NULL | NULL | NULL | NULL |
+| 206 | POND15 | Legacy Data (Unknown Hauler) | NULL | Tandem | NULL | NULL | True | NULL | NULL | NULL | NULL |
 

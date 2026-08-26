@@ -3,7 +3,13 @@
 <section class="card">
     <h2>AI Features</h2>
     <div class="ai-feature-list">
-        <a class="ai-feature-item" href="{{ url_for('ai_assistant') }}">
+                <div class="ai-feature-item">
+                    <div>
+                        <h3>Coming Soon</h3>
+                        <p>AI powered features for the McCracken ticketing system are currently in development.</p>
+                    </div>
+                </div>
+        {# <!-- <a class="ai-feature-item" href="{{ url_for('ai_assistant') }}">
             <div>
                 <h3>AI Assistant</h3>
                 <p>Ask questions about tickets, reports, trucks, jobs, and materials.</p>
@@ -16,7 +22,7 @@
                 <p>Generate material predictions from ticket images and review only mismatches.</p>
             </div>
             <span class="ai-feature-open" aria-hidden="true">Open</span>
-        </a>
+        </a> --> #}
     </div>
-</section>
+</section> 
 {% endblock %}

@@ -40,9 +40,16 @@
                     </div>
                 </div>
             {% endif %}
-            <form method="post" action="{{ url_for('logout') }}" style="display:inline;margin-left:12px;">
-                <button type="submit" style="cursor:pointer;">Logout</button>
-            </form>
+            {% if session.get("logged_in") %}
+                <span class="nav-user">
+                    👤 {{ session.get("username") }}
+                </span>
+
+                <form method="post" action="{{ url_for('logout') }}" style="display:inline;margin-left:12px;">
+                    <button type="submit" style="cursor:pointer;">Logout</button>
+                </form>
+            {% endif %}
+            {# Removed duplicate logout form #}
         </nav>
     </header>
     <main class="container">
