@@ -61,7 +61,7 @@
                     customer=filters.customer,
                     material_id=filters.material_id,
                     material_entry=filters.material_entry) }}">
-                    Print Report
+                    Download Report Pdf
                 </a>
                 <a href="{{ url_for('print_customer_reports',
                     date_from=filters.date_from,
@@ -73,7 +73,7 @@
                     customer=filters.customer,
                     material_id=filters.material_id,
                     material_entry=filters.material_entry) }}">
-                    Print Customer Report
+                    Download Customer Report Pdf
                 </a>
             <a class="report-daily-cta" href="{{ url_for('daily_report_dashboard') }}" target="_blank" rel="noopener">Daily Report</a>
 
