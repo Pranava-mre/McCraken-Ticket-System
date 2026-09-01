@@ -30,8 +30,7 @@ from flask import (
     request,
     send_file,
     session,
-    url_for,
-)
+    url_for,)
 from reportlab.lib.pagesizes import letter, landscape
 from reportlab.pdfgen import canvas
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
@@ -41,7 +40,7 @@ from reportlab.pdfbase.pdfmetrics import stringWidth
 from psycopg2 import IntegrityError
 from psycopg2.extras import RealDictCursor
 
-from services.auth_service import verify_login
+from services.auth_service import verify_login, record_ticket_audit
 from services.ticket_service import search_tickets_service
 # from chatbot import process_message
 
@@ -3243,8 +3242,7 @@ def list_unassigned_trucks(db):
             """
         )
         return cursor.fetchall()
-
-
+    
 def sync_epc_map_for_assignment(db, serial_number):
     with db.cursor() as cursor:
         cursor.execute(
@@ -3259,15 +3257,12 @@ def sync_epc_map_for_assignment(db, serial_number):
             (serial_number,),
         )
         row = cursor.fetchone()
-
     if not row:
         return
-
     epc = normalize_epc(row.get("epc"))
     truck_number = str(row.get("truck_number") or "").strip()
     if not epc or not truck_number:
         return
-
     with db.cursor() as cursor:
         cursor.execute(
             """
@@ -3300,11 +3295,9 @@ def deactivate_epc_map_for_serial(db, serial_number):
         row = cursor.fetchone()
     if not row:
         return
-
     epc = normalize_epc(row.get("epc"))
     if not epc:
         return
-
     with db.cursor() as cursor:
         cursor.execute(
             """
@@ -3339,7 +3332,6 @@ def search_rfid_assignments(db, query):
                 """
             )
             return cursor.fetchall()
-
         wildcard = f"%{query_text}%"
         cursor.execute(
             """
@@ -3368,7 +3360,6 @@ def search_rfid_assignments(db, query):
 def notification_in_cooldown(db, truck_number, source, cooldown_seconds):
     if cooldown_seconds <= 0:
         return False
-
     with db.cursor() as cursor:
         cursor.execute(
             """
@@ -4053,6 +4044,17 @@ def new_ticket():
                 inserted_ticket = cursor.fetchone()
                 if inserted_ticket:
                     created_ticket_id = inserted_ticket["id"]
+                    record_ticket_audit(
+                        db,
+                        ticket_id=created_ticket_id,
+                        ticket_number=ticket_number,
+                        action="CREATE",
+                        actor_user_id=created_by_user_id,
+                        actor_username=created_by,
+                        before_data={},
+                        after_data=dict(row, id=created_ticket_id),
+                        note="Ticket created",
+                    )
             db.commit()
         except Exception:
             db.rollback()
@@ -4889,7 +4891,11 @@ def save_ticket_edit(ticket_id):
         with db.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT id, ticket_number
+                SELECT
+                    id, ticket_number, direction, created_at, job_id,
+                    job_code_snapshot, job_name_snapshot, tax_exempt, customer_snapshot,
+                    truck_id, truck_number_snapshot, material_id, material_name_snapshot,
+                    quantity, unit, cost, notes
                 FROM tickets
                 WHERE id = %s AND COALESCE(active, TRUE) = TRUE
                 """,
@@ -5048,6 +5054,8 @@ def save_ticket_edit(ticket_id):
                     notes = %s,
                     active = TRUE,
                     modified_to_id = NULL,
+                    updated_by_user_id = %s,
+                    updated_by = %s,
                     pdf_path = %s,
                     pdf_blob = %s
                 WHERE id = %s
@@ -5068,11 +5076,25 @@ def save_ticket_edit(ticket_id):
                     unit,
                     cost,
                     notes,
+                    session.get("user_id"),
+                    session.get("username", ""),
                     pdf_path,
                     pdf_bytes,
                     ticket_id,
                 ),
             )
+
+        record_ticket_audit(
+            db,
+            ticket_id=ticket_id,
+            ticket_number=ticket_number,
+            action="UPDATE",
+            actor_user_id=session.get("user_id"),
+            actor_username=session.get("username", ""),
+            before_data=dict(old_row),
+            after_data=dict(updated_ticket_row, id=ticket_id),
+            note="Ticket edited",
+        )
 
         db.commit()
         flash(f"Ticket {ticket_number} updated.", "success")
@@ -5105,11 +5127,12 @@ def void_ticket_from_edit(ticket_id):
             cursor.execute(
                 """
                 UPDATE tickets
-                SET active = FALSE
+                SET active = FALSE,
+                    deleted_by_user_id = %s
                 WHERE id = %s AND COALESCE(active, TRUE) = TRUE
                 RETURNING ticket_number
                 """,
-                (ticket_id,),
+                (session.get("user_id"), ticket_id),
             )
             row = cursor.fetchone()
 
@@ -5117,6 +5140,18 @@ def void_ticket_from_edit(ticket_id):
             db.rollback()
             flash("Ticket not found or already inactive.", "error")
             return redirect(url_for("edit_tickets", **filter_args))
+
+        record_ticket_audit(
+            db,
+            ticket_id=ticket_id,
+            ticket_number=row["ticket_number"],
+            action="VOID",
+            actor_user_id=session.get("user_id"),
+            actor_username=session.get("username", ""),
+            before_data={"active": True},
+            after_data={"active": False},
+            note="Ticket voided from Edit Tickets",
+        )
 
         db.commit()
         flash(f"Ticket {row['ticket_number']} was voided.", "success")
@@ -6303,8 +6338,6 @@ def rfid_import_tags():
 @app.post("/rfid/mappings/assign")
 def rfid_assign_mapping():
     db = get_db()
-    created_by_user_id = session.get("user_id")
-    created_by = session.get("username", "")
     serial_number = normalize_serial_number(request.form.get("serial_number"))
     truck_id_raw = str(request.form.get("truck_id") or "").strip()
     notes = str(request.form.get("notes") or "").strip()
@@ -6332,10 +6365,10 @@ def rfid_assign_mapping():
 
         cursor.execute(
             """
-            INSERT INTO rfid_truck_tag_assignment (serial_number, truck_id, notes, assigned_at, updated_at, created_by_user_id, created_by)
-            VALUES (%s, %s, %s, NOW(), NOW(), %s, %s)
+            INSERT INTO rfid_truck_tag_assignment (serial_number, truck_id, notes, assigned_at, updated_at)
+            VALUES (%s, %s, %s, NOW(), NOW())
             """,
-            (serial_number, truck_id, notes, created_by_user_id, created_by),
+            (serial_number, truck_id, notes),
         )
 
     sync_epc_map_for_assignment(db, serial_number)
@@ -6427,13 +6460,26 @@ def void_ticket(ticket_id):
     try:
         with db.cursor() as cursor:
             cursor.execute(
-                "UPDATE tickets SET active = FALSE WHERE id = %s AND COALESCE(active, TRUE) = TRUE",
-                (ticket_id,),
+                "UPDATE tickets SET active = FALSE, deleted_by_user_id = %s WHERE id = %s AND COALESCE(active, TRUE) = TRUE",
+                (session.get("user_id"), ticket_id),
             )
             if cursor.rowcount == 0:
                 flash("Ticket is already inactive.", "error")
                 db.rollback()
                 return redirect(request.referrer or url_for("search_tickets"))
+
+        record_ticket_audit(
+            db,
+            ticket_id=ticket_id,
+            ticket_number=row["ticket_number"],
+            action="VOID",
+            actor_user_id=session.get("user_id"),
+            actor_username=session.get("username", ""),
+            before_data={"active": True},
+            after_data={"active": False},
+            note="Ticket voided",
+        )
+
         db.commit()
         flash(f"Ticket {row['ticket_number']} was voided.", "success")
     except Exception as exc:
@@ -6447,16 +6493,11 @@ def void_ticket(ticket_id):
 def admin_trucks():
     db = get_db()
     if request.method == "POST":
-        created_by_user_id = session.get("user_id")
-        created_by = session.get("username", "")
         truck_number = request.form.get("truck_number", "").strip()
         description = request.form.get("description", "").strip()
         truck_size = request.form.get("truck_size", "").strip()
         hauled_by = request.form.get("hauled_by", "").strip()
         license_plate = request.form.get("license_plate", "").strip()
-        if not created_by_user_id or not created_by:
-            flash("Your login session is missing user information. Please log in again.", "error")
-            return redirect(url_for("login"))
         if not truck_number:
             flash("Truck number is required.", "error")
             return redirect(url_for("admin_trucks"))
@@ -6464,8 +6505,8 @@ def admin_trucks():
             active_value = True if is_active_column_boolean(db, "trucks_main") else 1
             with db.cursor() as cursor:
                 cursor.execute(
-                    "INSERT INTO trucks_main (truck_number, notes, truck_size, trucking_company, license_plate, active, created_by, created_by_user_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-                    (truck_number, description, truck_size, hauled_by, license_plate, active_value, created_by, created_by_user_id),
+                    "INSERT INTO trucks_main (truck_number, notes, truck_size, trucking_company, license_plate, active) VALUES (%s, %s, %s, %s, %s, %s)",
+                    (truck_number, description, truck_size, hauled_by, license_plate, active_value),
                 )
             db.commit()
             flash("Truck added.", "success")
@@ -6573,8 +6614,6 @@ def edit_trucks():
 def save_truck_edit(truck_id):
     db = get_db()
     truck_query = request.form.get("q", "").strip()
-    updated_by_user_id = session.get("user_id")
-    updated_by = session.get("username")
 
     truck_number = request.form.get("truck_number", "").strip()
     description = request.form.get("description", "").strip()
@@ -6603,12 +6642,10 @@ def save_truck_edit(truck_id):
                     truck_size = %s,
                     trucking_company = %s,
                     license_plate = %s,
-                    active = %s,
-                    updated_by = %s,
-                    updated_by_user_id = %s
+                    active = %s
                 WHERE id = %s
                 """,
-                (truck_number, description, truck_size, hauled_by, license_plate, active_value, updated_by, updated_by_user_id, truck_id),
+                (truck_number, description, truck_size, hauled_by, license_plate, active_value, truck_id),
             )
             if cursor.rowcount == 0:
                 db.rollback()
