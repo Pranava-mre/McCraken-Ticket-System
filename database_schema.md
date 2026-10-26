@@ -182,6 +182,8 @@
 | 4 | `notes` | `text` | NO | `''::text` |
 | 5 | `assigned_at` | `timestamp with time zone` | NO | `now()` |
 | 6 | `updated_at` | `timestamp with time zone` | NO | `now()` |
+| 7 | `created_by` | `text` | YES | `` |
+| 8 | `created_by_user_id` | `bigint` | YES | `` |
 
 ## Table: `public.ticket_audit_log`
 

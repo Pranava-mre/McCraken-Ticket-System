@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+    <h2>Printing {{ report_title }}</h2>
+    <p id="print_status">Preparing print preview...</p>
+
+    <div class="actions" style="margin-bottom: 10px;">
+        <a href="{{ pdf_url }}" target="_blank" rel="noopener">Open PDF Manually</a>
+        <a href="{{ url_for('reports') }}" target="_self">Back to Reports</a>
+    </div>
+
+    <div class="table-wrap" style="border: 1px solid #e5e7eb; height: 70vh;">
+        <iframe
+            id="report_print_frame"
+            src="{{ pdf_url }}"
+            title="{{ report_title }} PDF"
+            style="width: 100%; height: 100%; border: 0;"
+        ></iframe>
+    </div>
+</section>
+
+<script>
+    (function () {
+        const statusEl = document.getElementById("print_status");
+        const frame = document.getElementById("report_print_frame");
+        let printTriggered = false;
+
+        function attemptPrint() {
+            if (printTriggered) return;
+            printTriggered = true;
+            if (statusEl) {
+                statusEl.textContent = "Opening print dialog... If it does not appear, use 'Open PDF Manually'.";
+            }
+
+            try {
+                if (frame && frame.contentWindow) {
+                    frame.contentWindow.focus();
+                    frame.contentWindow.print();
+                    return;
+                }
+            } catch (error) {
+                // Continue to the window fallback.
+            }
+
+            try {
+                window.focus();
+                window.print();
+            } catch (error) {
+                if (statusEl) {
+                    statusEl.textContent = "Printing is unavailable here. Use 'Open PDF Manually'.";
+                }
+            }
+        }
+
+        if (frame) {
+            frame.addEventListener("load", function () {
+                setTimeout(attemptPrint, 500);
+            });
+        }
+
+        setTimeout(function () {
+            if (!printTriggered) attemptPrint();
+        }, 1800);
+
+        window.addEventListener("afterprint", function () {
+            if (statusEl) statusEl.textContent = "Print dialog closed.";
+        });
+    })();
+</script>
+{% endblock %}

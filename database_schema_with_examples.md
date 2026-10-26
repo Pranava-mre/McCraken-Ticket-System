@@ -60,8 +60,8 @@
 
 | id | job_code | job_name | customer | active | source_updated_at | refreshed_at | tax_exempt |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 2627 | 6667 | Alcosan N.End Plant Exp (6667) | Mascaro Construction Co., LP | 1 | NULL | 2026-08-26T10:41:50-04:00 | Y |
-| 2732 | 6857 | Waltco Parking Lot (6857) | Redcon, LLC | 1 | NULL | 2026-08-26T10:41:50-04:00 | N |
+| 2627 | 6667 | Alcosan N.End Plant Exp (6667) | Mascaro Construction Co., LP | 1 | NULL | 2026-09-01T11:10:52-04:00 | Y |
+| 2732 | 6857 | Waltco Parking Lot (6857) | Redcon, LLC | 1 | NULL | 2026-09-01T11:10:52-04:00 | N |
 
 ## Table: `public.manual_jobs`
 
@@ -256,13 +256,15 @@ No example data available.
 | 4 | `notes` | `text` | NO | `''::text` |
 | 5 | `assigned_at` | `timestamp with time zone` | NO | `now()` |
 | 6 | `updated_at` | `timestamp with time zone` | NO | `now()` |
+| 7 | `created_by` | `text` | YES | `` |
+| 8 | `created_by_user_id` | `bigint` | YES | `` |
 
 ### Example Data
 
-| id | serial_number | truck_id | notes | assigned_at | updated_at |
-| --- | --- | --- | --- | --- | --- |
-| 7 | 38 | 365 | issued 7/23/26 | 2026-07-23 12:18:58.692946+00:00 | 2026-07-23 12:25:16.590123+00:00 |
-| 91 | 83 | 659 |  | 2026-08-05 18:33:20.669352+00:00 | 2026-08-05 18:33:20.669352+00:00 |
+| id | serial_number | truck_id | notes | assigned_at | updated_at | created_by | created_by_user_id |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 7 | 38 | 365 | issued 7/23/26 | 2026-07-23 12:18:58.692946+00:00 | 2026-07-23 12:25:16.590123+00:00 | NULL | NULL |
+| 91 | 83 | 659 |  | 2026-08-05 18:33:20.669352+00:00 | 2026-08-05 18:33:20.669352+00:00 | NULL | NULL |
 
 ## Table: `public.ticket_audit_log`
 
@@ -302,7 +304,7 @@ No example data available.
 
 | ticket_year | last_value |
 | --- | --- |
-| 2026 | 15199 |
+| 2026 | 15756 |
 
 ## Table: `public.tickets`
 

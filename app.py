@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, urlparse, unquote
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import base64
+from reportlab.lib.enums import TA_JUSTIFY,TA_CENTER
 import re
 import psycopg2
 import pyodbc
@@ -35,12 +36,12 @@ from reportlab.lib.pagesizes import letter, landscape
 from reportlab.pdfgen import canvas
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
 from reportlab.lib import colors
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.pdfbase.pdfmetrics import stringWidth
 from psycopg2 import IntegrityError
 from psycopg2.extras import RealDictCursor
 
-from services.auth_service import verify_login, record_ticket_audit
+from services.auth_service import record_ticket_audit, verify_login
 from services.ticket_service import search_tickets_service
 # from chatbot import process_message
 
@@ -1475,7 +1476,22 @@ def to_pdf_bytes(ticket):
         pdf.drawString(left + 58, notes_y - 12, note_text)
 
         if include_signature_line:
-            sig_y = notes_y - notes_h - 12
+            disclaimer = Paragraph(
+                "Company and drivers assume all risk and liability associated with the Services and with access to the Facility. McCracken makes no warranties or representations about the condition of the Facility or access thereto.",
+                ParagraphStyle(
+                    "DriverCopyDisclaimer",
+                    parent=getSampleStyleSheet()["Normal"],
+                    fontName="Helvetica",
+                    fontSize=8.5,
+                    leading=8.5,
+                    alignment=TA_CENTER
+                ),
+            )
+            disclaimer_top = notes_y - notes_h - 6
+            _, disclaimer_height = disclaimer.wrap(box_w - 20, disclaimer_top)
+            disclaimer.drawOn(pdf, left + 10, disclaimer_top - disclaimer_height)
+
+            sig_y = disclaimer_top - disclaimer_height - 8
 
             draw_field(
                 "Driver Name",
@@ -1516,8 +1532,8 @@ def to_pdf_bytes(ticket):
     )
 
     draw_ticket_section(
-        "Internal Billing Copy",
-        False,
+        "Driver Copy Signature Required",
+        True,
         section_top=middle_y,
         section_bottom=0
     )
@@ -1525,6 +1541,108 @@ def to_pdf_bytes(ticket):
     pdf.setDash(3, 3)
     pdf.line(36, middle_y, width - 36, middle_y)
     pdf.setDash()
+
+    pdf.showPage()
+
+    internal_bottom = 490
+    draw_ticket_section(
+        "Internal Billing Copy",
+        False,
+        section_top=height,
+        section_bottom=internal_bottom
+    )
+
+    terms = [
+        ("Agreement and Definitions", True),
+        ('Trucking Company ("Company") agrees to be bound by the following terms and conditions (this "Agreement") in connection with Company\'s access to, entrance upon, and use of the dump facility owned by McCracken Materials LLC ("McCracken") and located at 13675 McCracken Road, Garfield Heights, Ohio 44125 (the "Facility").', False),
+        ('For purposes of this Agreement, the term "Company" includes all Company employees, drivers, and subcontracted truckers or independent haulers engaged by Company to perform the Services. "Customer" means the customer with which Company has entered into a contract relating to the hauling and dumping services to be performed by Company. "Material" means any and all materials brought to or sought to be dumped at the Facility by Company. "Services" means the transportation, loading, unloading, dumping, and related services performed by Company in connection with this Agreement, including, without limitation, all materials, equipment, and vehicles used in the performance of such services.', False),
+        ("Banned Materials", True),
+        ('Materials not specifically listed on the McCracken pricing schedule are prohibited from being dumped at the Facility ("Banned Materials").', False),
+        ("If Company dumps Banned Materials at the Facility, Company shall assume all responsibility for and costs associated with removal and cleanup of the Banned Materials, any related cleanup of the Facility, and any resulting fines, costs, damages, and liabilities.", False),
+        ("Banned Materials include, but are not limited to, contaminated materials, materials containing asbestos (both friable and non-friable), bridge decking, slag, Construction and Demolition (C&amp;D) materials, wood, stumps, tires, trash and waste, plastic, and metals.", False),
+        ("Assumption of Risk and Road Hazards", True),
+        ("Company and its drivers assume all risk and liability associated with the Services and access to the Facility, including risks arising from road conditions, roadway hazards, uneven surfaces, and the operation of vehicles and equipment while on Facility property.", False),
+        ("Each driver acknowledges and accepts responsibility for exercising reasonable care when navigating roads, access routes, and designated dumping areas.", False),
+        ("McCracken makes no warranties or representations regarding the condition of the Facility, its roads, or access thereto.", False),
+        ("Driver Responsibilities and Facility Rules", True),
+        ("Company drivers must comply with McCracken's instructions at all times while at the Facility.", False),
+        ("Company drivers must remain in their trucks at all times other than during the time they must exit their vehicles to procure their Facility access tickets.", False),
+        ("During the ticketing process, trucks must be parked in designated areas only. Drivers must wait for other trucks to exit the designated area before entering.", False),
+        ("All Materials must be dumped in the area designated for that type of Material. If Company dumps Material in an incorrect area, Company shall assume full responsibility for the cost of relocating the Material to the proper area.", False),
+        ("All Company drivers and employees must adhere to all traffic laws and applicable governmental ordinances when entering and exiting the Facility.", False),
+        ("Company drivers must observe the Facility speed limit of 5 MPH.", False),
+        ("Firearms, illegal drugs, controlled substances used unlawfully, alcohol consumption, and being under the influence of drugs or alcohol are strictly prohibited at the Facility.", False),
+        ("McCracken reserves the right to refuse access to any Company driver, employee, or Customer who fails to comply with these rules.", False),
+        ("Driver Acknowledgment and Signature", True),
+        ("The Driver signing below acknowledges that they have read, understand, and agree to comply with the terms, conditions, safety requirements, and Facility rules set forth in this Agreement.", False),
+        ("The Driver further represents that the name and contact information provided are accurate.", False),
+    ]
+
+    terms_style = ParagraphStyle(
+        "TicketTerms",
+        parent=getSampleStyleSheet()["Normal"],
+        fontName="Helvetica",
+        fontSize=8.5,
+        leading=8.5,
+        alignment=TA_JUSTIFY,
+        leftIndent=12,
+        bulletIndent=0,
+        spaceAfter=1.5,
+    )
+    terms_heading_style = ParagraphStyle(
+        "TicketTermsHeading",
+        parent=terms_style,
+        fontName="Helvetica-Bold",
+        fontSize=9,
+        leading=9,
+        leftIndent=0,
+        spaceBefore=1,
+        spaceAfter=1.5,
+    )
+
+    pdf.setFont("Helvetica-Bold", 9)
+    pdf.setFont("Helvetica-Bold", 9)
+    pdf.drawCentredString(
+        pdf._pagesize[0] / 2,
+        internal_bottom - 18,
+        "TERMS AND CONDITIONS"
+    )
+    terms_y = internal_bottom - 27
+    terms_width = width - 72
+    for text, is_heading in terms:
+        style = terms_heading_style if is_heading else terms_style
+        paragraph_text = f"<u>{text}</u>" if is_heading else text
+        paragraph = Paragraph(paragraph_text, style, bulletText=None if is_heading else "-")
+        _, paragraph_height = paragraph.wrap(terms_width, terms_y)
+        terms_y -= paragraph_height
+        paragraph.drawOn(pdf, 36, terms_y)
+        terms_y -= style.spaceAfter
+
+    if terms_y < 50:
+        raise ValueError("Ticket agreement does not fit above the driver signature fields.")
+
+    signature_y = 48
+    signature_field_width = (width - 92) / 2
+    draw_field(
+        "Driver Name",
+        "",
+        36,
+        signature_y + 20,
+        signature_field_width,
+        20,
+        label_width=62,
+        font_size=8,
+    )
+    draw_field(
+        "Signature",
+        "",
+        56 + signature_field_width,
+        signature_y + 20,
+        signature_field_width,
+        20,
+        label_width=58,
+        font_size=8,
+    )
 
     pdf.showPage()
     pdf.save()
@@ -4389,19 +4507,19 @@ def ai_features():
 
 
 # def get_material_classifier():
-#     global _material_model
+    global _material_model
 
-#     with _material_model_lock:
-#         if _material_model is not None:
-#             return _material_model
-#         if not MATERIAL_MODEL_PATH.exists():
-#             raise RuntimeError(f"Material model was not found at {MATERIAL_MODEL_PATH}.")
-#         try:
-#             from ultralytics import YOLO
-#         except ImportError as exc:
-#             raise RuntimeError("Material detection requires the ultralytics package.") from exc
-#         _material_model = YOLO(str(MATERIAL_MODEL_PATH))
-#         return _material_model
+    with _material_model_lock:
+        if _material_model is not None:
+            return _material_model
+        if not MATERIAL_MODEL_PATH.exists():
+            raise RuntimeError(f"Material model was not found at {MATERIAL_MODEL_PATH}.")
+        try:
+            from ultralytics import YOLO
+        except ImportError as exc:
+            raise RuntimeError("Material detection requires the ultralytics package.") from exc
+        _material_model = YOLO(str(MATERIAL_MODEL_PATH))
+        return _material_model
 
 
 # def predict_ticket_material(image_url):
@@ -5791,13 +5909,6 @@ def print_reports():
         except Exception as exc:
             app.logger.warning("Azure Blob upload failed for report %s: %s", report_filename, exc)
 
-        if os.name == "nt":
-            try:
-                temp_print_path = write_temp_pdf_for_print(pdf_bytes, "report")
-                print_pdf_file(temp_print_path)
-            except Exception:
-                pass
-
         try:
             upload_download_audit_blob(
                 category="reports_pdf",
@@ -5808,21 +5919,25 @@ def print_reports():
         except Exception as exc:
             app.logger.warning("Could not audit-upload report PDF download: %s", exc)
 
-        return send_file(
-            io.BytesIO(pdf_bytes),
-            mimetype="application/pdf",
-            as_attachment=True,
-            download_name=report_filename,
+        if request.args.get("pdf") == "1":
+            return send_file(
+                io.BytesIO(pdf_bytes),
+                mimetype="application/pdf",
+                as_attachment=False,
+                download_name=report_filename,
+            )
+
+        preview_args = request.args.to_dict()
+        preview_args["pdf"] = "1"
+        return render_template(
+            "report_auto_print.html",
+            report_title="Ticket Report",
+            pdf_url=url_for(request.endpoint, **preview_args),
         )
 
     pdf_path = REPORT_PDF_DIR / report_filename
     with open(pdf_path, "wb") as f:
         f.write(pdf_bytes)
-
-    try:
-        print_pdf_file(str(pdf_path))
-    except Exception:
-        pass
 
     try:
         upload_download_audit_blob(
@@ -5834,11 +5949,20 @@ def print_reports():
     except Exception as exc:
         app.logger.warning("Could not audit-upload local report PDF download: %s", exc)
 
-    return send_file(
-        pdf_path,
-        mimetype="application/pdf",
-        as_attachment=True,
-        download_name=pdf_path.name,
+    if request.args.get("pdf") == "1":
+        return send_file(
+            pdf_path,
+            mimetype="application/pdf",
+            as_attachment=False,
+            download_name=pdf_path.name,
+        )
+
+    preview_args = request.args.to_dict()
+    preview_args["pdf"] = "1"
+    return render_template(
+        "report_auto_print.html",
+        report_title="Ticket Report",
+        pdf_url=url_for(request.endpoint, **preview_args),
     )
 
 
@@ -5946,11 +6070,20 @@ def print_customer_reports():
     except Exception as exc:
         app.logger.warning("Could not audit-upload customer grouped report PDF download: %s", exc)
 
-    return send_file(
-        io.BytesIO(pdf_bytes),
-        mimetype="application/pdf",
-        as_attachment=True,
-        download_name=report_filename,
+    if request.args.get("pdf") == "1":
+        return send_file(
+            io.BytesIO(pdf_bytes),
+            mimetype="application/pdf",
+            as_attachment=False,
+            download_name=report_filename,
+        )
+
+    preview_args = request.args.to_dict()
+    preview_args["pdf"] = "1"
+    return render_template(
+        "report_auto_print.html",
+        report_title="Customer Report",
+        pdf_url=url_for(request.endpoint, **preview_args),
     )
 
 

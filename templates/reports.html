@@ -60,8 +60,9 @@
                     customer_id=filters.customer_id,
                     customer=filters.customer,
                     material_id=filters.material_id,
-                    material_entry=filters.material_entry) }}">
-                    Download Report Pdf
+                    material_entry=filters.material_entry,
+                    pdf=1) }}" class="js-report-print-link" data-report-title="Ticket Report">
+                    Print Report PDF
                 </a>
                 <a href="{{ url_for('print_customer_reports',
                     date_from=filters.date_from,
@@ -72,9 +73,15 @@
                     customer_id=filters.customer_id,
                     customer=filters.customer,
                     material_id=filters.material_id,
-                    material_entry=filters.material_entry) }}">
-                    Download Customer Report Pdf
+                    material_entry=filters.material_entry,
+                    pdf=1) }}" class="js-report-print-link" data-report-title="Customer Report">
+                    Print Customer Report PDF
                 </a>
+            <span id="report_print_status" class="report-print-status" role="status" aria-live="polite" hidden>
+                <span class="report-print-spinner" aria-hidden="true"></span>
+                <span id="report_print_status_text"></span>
+            </span>
+            <a id="report_print_fallback" target="_blank" rel="noopener" hidden>Open PDF Manually</a>
             <a class="report-daily-cta" href="{{ url_for('daily_report_dashboard') }}" target="_blank" rel="noopener">Daily Report</a>
 
             <a href="{{ url_for('export_reports_csv', date_from=filters.date_from, date_to=filters.date_to, direction=filters.direction, job_id=filters.job_id, job_entry=filters.job_entry, customer_id=filters.customer_id, customer=filters.customer, material_id=filters.material_id, material_entry=filters.material_entry) }}">Export CSV</a>
@@ -232,6 +239,50 @@
         <p>No matching tickets.</p>
     {% endif %}
 </section>
+<iframe
+    id="report_print_frame"
+    title="Report PDF print frame"
+    aria-hidden="true"
+    style="position: fixed; left: -10000px; bottom: 0; width: 1px; height: 1px; border: 0;"
+></iframe>
+<style>
+    .report-print-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        white-space: nowrap;
+        color: #4b5563;
+        font-size: 0.9rem;
+    }
+
+    .report-print-status[hidden],
+    #report_print_fallback[hidden] {
+        display: none !important;
+    }
+
+    .report-print-spinner {
+        width: 14px;
+        height: 14px;
+        flex: 0 0 14px;
+        border: 2px solid #cbd5e1;
+        border-top-color: #2563eb;
+        border-radius: 50%;
+        animation: report-print-spin 0.7s linear infinite;
+    }
+
+    .report-print-status.is-ready .report-print-spinner {
+        display: none;
+    }
+
+    html.report-print-loading,
+    html.report-print-loading * {
+        cursor: wait !important;
+    }
+
+    @keyframes report-print-spin {
+        to { transform: rotate(360deg); }
+    }
+</style>
 <script>
 (() => {
     const jobInput = document.getElementById("report_job_search");
@@ -309,6 +360,60 @@
     customerInput.addEventListener("change", syncSelectedCustomer);
     materialInput.addEventListener("input", syncSelectedMaterial);
     materialInput.addEventListener("change", syncSelectedMaterial);
+})();
+</script>
+<script>
+(() => {
+    const printLinks = document.querySelectorAll(".js-report-print-link");
+    const frame = document.getElementById("report_print_frame");
+    const status = document.getElementById("report_print_status");
+    const statusText = document.getElementById("report_print_status_text");
+    const fallback = document.getElementById("report_print_fallback");
+    if (!printLinks.length || !frame || !status || !statusText || !fallback) return;
+
+    let pendingPrint = false;
+    let resetCursorTimer;
+
+    const finishLoading = () => {
+        document.documentElement.classList.remove("report-print-loading");
+        window.clearTimeout(resetCursorTimer);
+    };
+
+    printLinks.forEach((link) => {
+        link.addEventListener("click", (event) => {
+            event.preventDefault();
+            pendingPrint = true;
+            status.hidden = false;
+            status.classList.remove("is-ready");
+            statusText.textContent = `Preparing ${link.dataset.reportTitle || "report"}...`;
+            fallback.hidden = true;
+            fallback.href = link.href;
+            document.documentElement.classList.add("report-print-loading");
+            window.clearTimeout(resetCursorTimer);
+            resetCursorTimer = window.setTimeout(finishLoading, 60000);
+            frame.src = link.href;
+        });
+    });
+
+    frame.addEventListener("load", () => {
+        if (!pendingPrint) return;
+        pendingPrint = false;
+        finishLoading();
+        status.classList.add("is-ready");
+        statusText.textContent = "PDF ready. Opening print dialog...";
+        fallback.hidden = false;
+        setTimeout(() => {
+            try {
+                frame.contentWindow.addEventListener("afterprint", () => {
+                    statusText.textContent = "Print dialog closed.";
+                }, { once: true });
+                frame.contentWindow.focus();
+                frame.contentWindow.print();
+            } catch (error) {
+                statusText.textContent = "Automatic printing unavailable. Open the PDF manually.";
+            }
+        }, 700);
+    });
 })();
 </script>
 {% endblock %}
